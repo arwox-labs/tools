@@ -181,8 +181,12 @@ if [[ $rc11 == 0 ]] \
 else
   f 11
 fi
-# Check 12: list far smaller than state/list-count -> err:list-shrunk, code 2, last-ok untouched
-printf '%s\n' '10' > "$T/state/list-count"
+# Check 12: list far smaller than the per-owner baseline list-count-<owner> ->
+# err:list-shrunk, code 2, last-ok untouched. CA_GITHUB_BASE stays set here on
+# purpose: unsuffixed only marks a legacy single-base caller, and only that
+# caller still exits 2 on a shrunken list (CA_GITHUB_BASES reads no source here).
+printf '%s\n' '10' > "$T/state/list-count-arwox-labs"
+printf '%s\n' '10' > "$T/state/list-count-arwoxbx24"
 last12=$(cat "$T/last-ok")
 out12=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv "$bin/code-archive" --changed 2>&1); rc12=$?
 if [[ $rc12 == 2 ]] \
@@ -192,11 +196,14 @@ if [[ $rc12 == 2 ]] \
 else
   f 12
 fi
-# Check 13: a row with archived=true is skipped without being mirrored or logged
+# Check 13: a row with archived=true is skipped without being mirrored or logged.
+# One owner: the legacy CA_LIST_FILE is read once per owner, and a second read of
+# the same row would be journaled as skip:dup and leak the name into the log;
+# CA_GITHUB_SRC maps owner "github" onto the fixture dir "$T/github".
 mkgh "archrepo"
-printf '%s\n' '1' > "$T/state/list-count"
+printf '%s\n' '1' > "$T/state/list-count-github"
 printf '%s\t%s\t%s\t%s\n' 'archrepo' '2026-09-30T14:00:00Z' '50' 'true' > "$T/list13.tsv"
-out13=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list13.tsv "$bin/code-archive" --changed 2>&1); rc13=$?
+out13=$(CA_GITHUB_SRC="$T/%s" CA_GITHUB_BASES=github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list13.tsv "$bin/code-archive" --changed 2>&1); rc13=$?
 if [[ $rc13 == 0 ]] \
    && [[ ! -e "$T/repos/archrepo.git" ]] \
    && ! grep -qF 'archrepo' "$T/log/code-archive.log" \
@@ -391,13 +398,14 @@ else
 fi
 
 # Check 22: --changed runs the Monday drill only on the configured day.
+# Source per owner: CA_GITHUB_SRC + single owner "github" -> "$T/github" fixtures.
 printf '#!/usr/bin/env bash\ntouch "$T/drill-called"\n' > "$T/stub-drill"
 chmod +x "$T/stub-drill"
 rm -f "$T/drill-called"
-out22=$(T="$T" CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc22=$?
+out22=$(T="$T" CA_GITHUB_SRC="$T/%s" CA_GITHUB_BASES=github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc22=$?
 called22=$([[ -e "$T/drill-called" ]] && echo yes || echo no)
 rm -f "$T/drill-called"
-out22b=$(T="$T" CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc22b=$?
+out22b=$(T="$T" CA_GITHUB_SRC="$T/%s" CA_GITHUB_BASES=github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc22b=$?
 if [[ $rc22 == 0 && $called22 == yes && $rc22b == 0 && ! -e "$T/drill-called" ]]; then
   p 22
 else

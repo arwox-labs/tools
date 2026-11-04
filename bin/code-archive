@@ -27,7 +27,21 @@ if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
   exit 0
 fi
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="/root/workspaces/tools/bin/code-archive" CA_ASKPASS=1
+# Owner split (repositories moved to arwox-labs 03.11.2026): --changed always
+# reads a list per owner of CA_GITHUB_BASES (the first owner wins a duplicate
+# name) and never reduces that list — CA_GITHUB_BASE only serves the by-name
+# mode. legacy_single marks an old single-base caller and keeps its exit-2
+# behaviour on a failed list, nothing else.
+CA_GITHUB_BASE_EXT="${CA_GITHUB_BASE:-}"
+CA_GITHUB_BASES_EXT="${CA_GITHUB_BASES:-}"
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
+CA_GITHUB_BASES="${CA_GITHUB_BASES:-arwox-labs arwoxbx24}"
+CA_GITHUB_SRC="${CA_GITHUB_SRC:-git@github.com:%s}"
+if [[ -n "$CA_GITHUB_BASE_EXT" && -z "$CA_GITHUB_BASES_EXT" ]]; then
+  legacy_single=1
+else
+  legacy_single=0
+fi
 CA_GITLAB_BASE="${CA_GITLAB_BASE:-https://gitlab.com/arwox24-group}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
@@ -60,9 +74,29 @@ state_write(){
 }
 cleanup_state_tmp(){ rm -f "$CA_STATE_DIR"/*.tmp.$$ "${list_tmp:-}"; }
 trap cleanup_state_tmp EXIT
+# Source base of one owner: the CA_GITHUB_SRC template with %s replaced by the
+# owner (default git@github.com:<owner>). CA_GITHUB_BASE is the by-name source
+# only and is not used here.
+github_base_for(){
+  local owner="$1"
+  printf '%s' "${CA_GITHUB_SRC//%s/$owner}"
+}
+# By-name mode: the first owner of CA_GITHUB_BASES that has the repository
+# (gh api "repos/<owner>/<name>" answers successfully). Prints the owner and
+# returns 0, or returns 1 so the caller falls back to the old single source.
+find_owner(){
+  local name="$1" owner
+  for owner in $CA_GITHUB_BASES; do
+    if gh api "repos/$owner/$name" --jq .full_name >/dev/null 2>&1; then
+      printf '%s' "$owner"
+      return 0
+    fi
+  done
+  return 1
+}
 source_gone(){
-  local name="$1" org gho
-  org="${CA_GITHUB_BASE##*[:/]}"
+  local name="$1" owner="${2:-}" org gho
+  org="${owner:-${CA_GITHUB_BASE##*[:/]}}"
   gho="$(gh api "repos/$org/$name" 2>&1)" || true
   source_gone_reason="$gho"
   [[ "$gho" == *'HTTP 404'* ]]
@@ -192,8 +226,9 @@ gitlab_protect_branches(){
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
 # condition so a failure doesn't abort the whole pass.
 mirror_name(){
-  local name="$1" src dst existing=0 ferr
-  src="$CA_GITHUB_BASE/$name.git"; dst="$CA_REPOS_DIR/$name.git"
+  local name="$1" owner="${2:-}" src dst existing=0 ferr
+  if [[ -n "$owner" ]]; then src="$(github_base_for "$owner")/$name.git"; else src="$CA_GITHUB_BASE/$name.git"; fi
+  dst="$CA_REPOS_DIR/$name.git"
   result=ok; error_reason=""
   if [[ -d "$dst" ]]; then
     existing=1
@@ -214,7 +249,7 @@ mirror_name(){
         result=err:not-found; return 1
       fi
       if [[ "$lr" == *"Repository not found"* ]]; then
-        if source_gone "$name"; then
+        if source_gone "$name" "$owner"; then
           error_reason="$lr"
           result=err:not-found; return 1
         fi
@@ -229,7 +264,7 @@ mirror_name(){
     # U7: if an existing copy's source is gone, keep the copy untouched and report kept.
     if (( existing )) && [[ -n "$(git --git-dir="$dst" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]] \
        && { [[ "$ferr" == *"Repository not found"* || "$ferr" == *"does not appear to be a git repository"* ]]; }; then
-      if source_gone "$name"; then
+      if source_gone "$name" "$owner"; then
         result=kept:source-gone; return 0
       fi
       error_reason="$ferr${source_gone_reason:+$'\n'$source_gone_reason}"
@@ -416,17 +451,66 @@ gl_push(){
   fi
   return 0
 }
-# Journal one result line for the current `name`.
+# Journal one result line for the current `name`. In --changed runs $jowner is
+# set and becomes the first field after the date, so the owner that produced
+# the line is visible.
 journal_local(){
-  local line class why
+  local line class why head
+  head="$(date +%F_%T)"
+  if [[ -n "${jowner:-}" ]]; then head="$head $jowner"; fi
   if [[ "$result" == err:* ]]; then
     class="${result#err:}"; why="$(reason "${error_reason:-$result}")"
-    line="$(printf '%s %s %s layer=%s %s\n' "$(date +%F_%T)" "$name" "$result" "$(err_layer "$class" "${error_reason:-$why}")" "$why" | mask)"
+    line="$(printf '%s %s %s layer=%s %s\n' "$head" "$name" "$result" "$(err_layer "$class" "${error_reason:-$why}")" "$why" | mask)"
   else
-    line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
+    line="$(printf '%s %s %s\n' "$head" "$name" "$result" | mask)"
   fi
   printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$CA_LOG"
+}
+# Align the github remote of an existing mirror with the owner that won the
+# repository (same source formula as mirror_name): local set-url only when the
+# URL differs, no network. A failure is one warn:remote line in $CA_LOG in the
+# journal_local style and never changes $result, $err or $skipped.
+align_github_remote(){
+  local name="$1" owner="${2:-}" dst src cur head line
+  dst="$CA_REPOS_DIR/$name.git"
+  [[ -d "$dst" ]] || return 0
+  cur="$(git --git-dir="$dst" remote get-url github 2>/dev/null || true)"
+  [[ -n "$cur" ]] || return 0
+  if [[ -n "$owner" ]]; then src="$(github_base_for "$owner")/$name.git"; else src="$CA_GITHUB_BASE/$name.git"; fi
+  if [[ "$cur" == "$src" ]]; then return 0; fi
+  if git --git-dir="$dst" remote set-url github "$src" >/dev/null 2>&1; then return 0; fi
+  head="$(date +%F_%T)"
+  if [[ -n "${jowner:-}" ]]; then head="$head $jowner"; fi
+  line="$(printf '%s warn:remote %s\n' "$head" "$name" | mask)"
+  printf '%s\n' "$line"
+  printf '%s\n' "$line" >> "$CA_LOG"
+  return 0
+}
+# List file of one owner for --changed: a provided CA_LIST_DIR/<owner>.tsv
+# (tests), the legacy single CA_LIST_FILE, or the owner's repositories from
+# GitHub. /users/<owner>/repos returns public repositories only, so the listing
+# uses /user/repos with the owner and organization_member affiliations and
+# filters by .owner.login; the row format is
+# "<owner>\t<name>\t<pushed_at>\t<size_kb>\t<archived>".
+fetch_list(){
+  local owner="$1" out
+  if [[ -n "${CA_LIST_DIR:-}" ]]; then
+    [[ -f "$CA_LIST_DIR/$owner.tsv" ]] || return 1
+    printf '%s\n' "$CA_LIST_DIR/$owner.tsv"
+    return 0
+  fi
+  if [[ -n "${CA_LIST_FILE:-}" ]]; then
+    printf '%s\n' "$CA_LIST_FILE"
+    return 0
+  fi
+  out="$CA_STATE_DIR/list-$owner.tmp.$$"
+  if ! gh api --paginate "/user/repos?affiliation=owner,organization_member&per_page=100" \
+       | jq -r --arg o "$owner" '.[] | select(.owner.login == $o) | [.owner.login, .name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$out"; then
+    rm -f "$out"
+    return 1
+  fi
+  printf '%s\n' "$out"
 }
 # U7c/D15: --protect-all — protect the `*` branch across every project of the
 # GitLab group. The group's projects are paged (per_page=100) via the API and
@@ -471,13 +555,13 @@ protect_all(){
 # Mirror one name under a free-space floor `min` (KB); prints and logs its
 # journal line and bumps ok/err. On a successful mirror `result` is ok/ok:created.
 process_one(){
-  local name="$1" min="$2" failed=0
+  local name="$1" min="$2" owner="${3:-}" failed=0
   mkdir -p "$CA_STATE_DIR"
   exec {lockfd}>"${CA_STATE_DIR}/$name.lock"
   flock "$lockfd"
   avail=$(df --output=avail -k "$CA_REPOS_DIR" 2>/dev/null | tail -n1 | tr -d '[:space:]' || true)
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail >= min )); then
-    if mirror_name "$name"; then
+    if mirror_name "$name" "$owner"; then
       case "$result" in
         skip:*) skipped=$((skipped+1));;
         *) ok=$((ok+1));;
@@ -527,51 +611,91 @@ changed_failed=()
 if [[ "${1:-}" == "--changed" ]]; then
   changed=1
   shift
-  org="${CA_GITHUB_BASE##*[:/]}"
-  # D5 source: list of "<name>\t<pushed_at>\t<size_kb>\t<archived>" rows. Use a
-  # provided file (tests) or fetch the org's repos from GitHub via gh api.
-  if [[ -n "${CA_LIST_FILE:-}" ]]; then
-    list_file="$CA_LIST_FILE"
-  else
-    list_file="$(mktemp)"; list_tmp="$list_file"
-    if ! gh api --paginate "/orgs/$org/repos?per_page=100" \
-         -q '.[] | [.name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$list_file"; then
-      name="$org"; result=err:list-fetch; error_reason='gh api failed'; journal_local
-      notify_send "не удалось получить список репозиториев GitHub — ночной проход сорван"
-      echo "err:list-fetch" >&2
-      exit 2
+  # Make the active owner list visible in the journal without reading env.
+  sources_line="$(date +%F_%T) sources owners=$CA_GITHUB_BASES"
+  printf '%s\n' "$sources_line"
+  printf '%s\n' "$sources_line" >> "$CA_LOG"
+  # D3 one-time migration: the legacy unsuffixed list-count is the baseline of
+  # the old single source arwoxbx24; it is copied to list-count-arwoxbx24 and
+  # the old file is kept as is.
+  if [[ -f "$CA_STATE_DIR/list-count" && ! -f "$CA_STATE_DIR/list-count-arwoxbx24" ]]; then
+    prev0="$(<"$CA_STATE_DIR/list-count")"
+    if [[ "$prev0" =~ ^[0-9]+$ ]]; then state_write "$CA_STATE_DIR/list-count-arwoxbx24" "$prev0"; fi
+  fi
+  combined="$CA_STATE_DIR/combined.tmp.$$"
+  : > "$combined"
+  # D5 source: one list per owner of "<owner>\t<name>\t<pushed_at>\t<size_kb>\t<archived>"
+  # rows (CA_LIST_DIR/<owner>.tsv in tests, CA_LIST_FILE for the legacy single
+  # source, otherwise GitHub via gh api), each with its own D3 completeness
+  # check: a list far smaller than the previous pass means that owner shrank
+  # (e.g. mass deletion) — journal and notify it, skip that owner and keep the
+  # other owners archiving instead of stopping the whole pass.
+  for owner in $CA_GITHUB_BASES; do
+    if ! list_file="$(fetch_list "$owner")"; then
+      # A failed list aborts the pass only for an old single-base caller; a
+      # multi-owner pass journals and notifies this owner and keeps going.
+      jowner=""; name="$owner"; result=err:list-fetch; error_reason='gh api failed'; journal_local
+      if (( legacy_single )); then
+        notify_send "не удалось получить список репозиториев GitHub — ночной проход сорван"
+        echo "err:list-fetch" >&2
+        exit 2
+      fi
+      notify_send "не удалось получить список репозиториев GitHub ($owner) — владелец пропущен, проход продолжен"
+      err=$((err+1))
+      continue
     fi
-  fi
-  # D3 completeness check: a list far smaller than the previous pass means the
-  # source shrank (e.g. mass deletion) — refuse rather than silently drop copies.
-  prev=""
-  if [[ -f "$CA_STATE_DIR/list-count" ]]; then
-    prev=$(<"$CA_STATE_DIR/list-count")
-    [[ "$prev" =~ ^[0-9]+$ ]] || prev=""
-  fi
-  cur=$(wc -l < "$list_file")
-  if [[ -n "$prev" ]] && (( cur < prev - 1 )); then
-    name="$org"; result=err:list-shrunk; error_reason="$prev to $cur"; journal_local
-    notify_send "список репозиториев GitHub сократился ($prev→$cur) — ночной проход остановлен"
-    exit 2
-  fi
-  state_write "$CA_STATE_DIR/list-count" "$cur"
-  mapfile -t rows < "$list_file"
-  for row in "${rows[@]}"; do
-    IFS=$'\t' read -r name pushed size archived <<< "$row"
+    count_file="$CA_STATE_DIR/list-count-$owner"
+    prev=""
+    if [[ -f "$count_file" ]]; then
+      prev=$(<"$count_file")
+      [[ "$prev" =~ ^[0-9]+$ ]] || prev=""
+    fi
+    cur=$(wc -l < "$list_file")
+    if [[ -n "$prev" ]] && (( cur < prev - 1 )); then
+      jowner=""; name="$owner"; result=err:list-shrunk; error_reason="$prev to $cur"; journal_local
+      notify_send "список репозиториев GitHub у $owner сократился ($prev→$cur) — владелец пропущен, проход продолжен"
+      if (( legacy_single )); then exit 2; fi
+      err=$((err+1))
+      continue
+    fi
+    state_write "$count_file" "$cur"
+    cat "$list_file" >> "$combined"
+  done
+  # The first owner in CA_GITHUB_BASES wins a duplicate name; a later repeat is
+  # skipped, counted in skipped and journaled as skip:dup:<owner>. The mirror
+  # stays flat: $CA_REPOS_DIR/<name>.git.
+  declare -A seen_names=()
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    IFS=$'\t' read -r f1 f2 f3 f4 f5 <<< "$row"
+    if [[ -n "${f5:-}" ]]; then
+      owner="$f1"; name="$f2"; pushed="$f3"; size="$f4"; archived="$f5"
+    else
+      read -r owner _rest <<< "$CA_GITHUB_BASES"
+      name="$f1"; pushed="$f2"; size="$f3"; archived="$f4"
+    fi
     [[ -n "$name" ]] || continue
+    jowner="$owner"
+    if [[ -n "${seen_names[$name]:-}" ]]; then
+      skipped=$((skipped+1))
+      result="skip:dup:$owner"
+      journal_local
+      continue
+    fi
+    seen_names[$name]=1
     [[ "$archived" == "true" ]] && { skipped=$((skipped+1)); continue; }
     if [[ -d "$CA_REPOS_DIR/$name.git" ]] \
        && [[ -f "$CA_STATE_DIR/$name.pushed_at" ]] \
        && [[ "$(<"$CA_STATE_DIR/$name.pushed_at")" == "$pushed" ]]; then
+      align_github_remote "$name" "$owner"
       skipped=$((skipped+1)); continue
     fi
     # D10: keep at least 2 GiB + this repo's size free before mirroring it.
-    process_one "$name" "$(( ${CA_FREE_MIN_KB:-2097152} + ${size:-0} ))"
+    process_one "$name" "$(( ${CA_FREE_MIN_KB:-2097152} + ${size:-0} ))" "$owner"
     if [[ "$result" == ok* ]]; then
       state_write "$CA_STATE_DIR/$name.pushed_at" "$pushed"
     fi
-  done
+  done < "$combined"
   # U7b: one consolidated owner message per night pass listing repos that moved
   # into failure (names are deduped by the .fail marker in process_one).
   if (( ${#changed_failed[@]} > 0 )); then
@@ -579,7 +703,10 @@ if [[ "${1:-}" == "--changed" ]]; then
   fi
 else
   for name; do
-    process_one "$name" "${CA_FREE_MIN_KB:-2097152}"
+    # By-name mode finds the owner itself; no owner found keeps the old source.
+    src_owner=""
+    src_owner="$(find_owner "$name")" || true
+    process_one "$name" "${CA_FREE_MIN_KB:-2097152}" "$src_owner"
     if [[ "$result" == ok* && -n "${CA_LIST_FILE:-}" && -f "$CA_LIST_FILE" ]]; then
       pushed=$(awk -F '\t' -v wanted="$name" '$1 == wanted { print $2; exit }' "$CA_LIST_FILE")
       [[ -n "$pushed" ]] && state_write "$CA_STATE_DIR/$name.pushed_at" "$pushed"
