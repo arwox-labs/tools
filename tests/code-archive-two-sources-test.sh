@@ -2,7 +2,8 @@
 # code-archive-two-sources-test: разделение репозиториев на двух владельцев
 # GitHub (CA_GITHUB_BASES + шаблон CA_GITHUB_SRC) в bin/code-archive:
 # независимость владельцев при сбое списка и при сокращении, дедупликация
-# одинаковых имён, режим по имени, находящий владельца через gh api.
+# одинаковых имён (живая копия archived=false побеждает архивную archived=true,
+# сценарий g), режим по имени, находящий владельца через gh api.
 # Офлайн: списки — CA_LIST_DIR/<owner>.tsv, источники GitHub и приёмник
 # GitLab — локальные каталоги mktemp; настоящие gh api и сеть не используются
 # (gh подменён заглушкой только в сценарии e).
@@ -37,6 +38,9 @@ seed "$TMP/ownerA/alpha.git" alpha-A
 seed "$TMP/ownerA/dup.git"   dup-A
 seed "$TMP/ownerB/beta.git"  beta-B
 seed "$TMP/ownerB/dup.git"   dup-B
+# Сценарий g: у ownerB живой (archived=false) источник gdup; у ownerA строка
+# archived=true с тем же именем, источника ownerA/gdup.git не создаётся.
+seed "$TMP/ownerB/gdup.git"  gdup-B
 
 # Строки списка: <owner>\t<name>\t<pushed_at>\t<size_kb>\t<archived>.
 # У дубля dup pushed_at разный у владельцев — победитель виден по состоянию.
@@ -110,6 +114,14 @@ git -c init.defaultBranch=main init -q --bare "$TMP/repos-f/gamma.git"
 git --git-dir="$TMP/repos-f/gamma.git" remote add github "$TMP/ownerA/gamma.git"
 printf '2026-11-01T00:00:00Z\n' > "$TMP/state-f/gamma.pushed_at"
 
+# --- Сценарий g: одно имя у двух владельцев — у первого archived=true
+# (архивная старая копия), у второго archived=false (живая) ---
+mkdir -p "$TMP/list-g"
+printf '%s\t%s\t%s\t%s\t%s\n' \
+  'ownerA' 'gdup' '2026-11-01T00:00:00Z' '10' 'true' > "$TMP/list-g/ownerA.tsv"
+printf '%s\t%s\t%s\t%s\t%s\n' \
+  'ownerB' 'gdup' '2026-11-02T00:00:00Z' '10' 'false' > "$TMP/list-g/ownerB.tsv"
+
 # --- Сценарий a: оба владельца обработаны ---
 rc_a=0; out_a="$(run_ca a 2>&1)" || rc_a=$?
 
@@ -126,6 +138,9 @@ rc_e=0; out_e="$(run_named beta 2>&1)" || rc_e=$?
 
 # --- Сценарий f: пропуск по pushed_at выравнивает remote на победителя ---
 rc_f=0; out_f="$(run_ca f "$TMP/list-f" 2>&1)" || rc_f=$?
+
+# --- Сценарий g: живая копия archived=false у второго владельца ---
+rc_g=0; out_g="$(run_ca g "$TMP/list-g" 2>&1)" || rc_g=$?
 
 FAILS=0
 N=0
@@ -177,6 +192,13 @@ f_summary(){ grep -qF 'ok=0 err=0 skipped=1' <<<"$out_f"; }
 f_no_err(){ ! grep -qF 'gamma err' "$TMP/log-f.log"; }
 f_no_warn(){ ! grep -qF 'warn:remote' "$TMP/log-f.log"; }
 
+g_rc0(){ test "$rc_g" -eq 0; }
+g_ok_owner_b(){ grep -qF 'ownerB gdup ok' "$TMP/log-g.log"; }
+g_no_dup_owner_b(){ ! grep -qF 'skip:dup:ownerB' "$TMP/log-g.log"; }
+g_mirror(){ test -d "$TMP/repos-g/gdup.git"; }
+g_src_owner_b(){ test "$(git --git-dir="$TMP/repos-g/gdup.git" remote get-url github)" = "$TMP/ownerB/gdup.git"; }
+g_marker_owner_b(){ test "$(git --git-dir="$TMP/repos-g/gdup.git" show main:marker)" = "gdup-B"; }
+
 check "a: код возврата 0" a_rc0
 check "a: зеркало ownerA (alpha)" a_alpha
 check "a: зеркало ownerB (beta)" a_beta
@@ -214,6 +236,12 @@ check "f: remote github выровнен на победителя ownerB" f_src
 check "f: итог ok=0 err=0 skipped=1" f_summary
 check "f: пропуск не превратился в ошибку" f_no_err
 check "f: warn:remote не писался" f_no_warn
+check "g: код возврата 0" g_rc0
+check "g: журнал живого ownerB — ok" g_ok_owner_b
+check "g: skip:dup живого ownerB по имени нет" g_no_dup_owner_b
+check "g: зеркало gdup создано" g_mirror
+check "g: источник — база второго владельца ownerB" g_src_owner_b
+check "g: содержимое взято из живого ownerB" g_marker_owner_b
 
 if [ "$FAILS" -eq 0 ]; then
   echo PASS
