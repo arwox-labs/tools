@@ -6,6 +6,10 @@ case ${1:-} in -h|--help) echo "usage: code-archive-drill  (checks archive refs 
 # Default environment
 CA_ENV_FILE="${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}"
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
+# Owner split (03.11.2026): repositories live under two owners, so the GitHub
+# side is resolved per repository instead of from one base.
+CA_GITHUB_BASES="${CA_GITHUB_BASES:-arwox-labs arwoxbx24}"
+CA_GITHUB_SRC="${CA_GITHUB_SRC:-git@github.com:%s}"
 CA_GITLAB_BASE="${CA_GITLAB_BASE:-https://gitlab.com/arwox24-group}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
@@ -128,7 +132,12 @@ else
     log "drill:mismatch restore $name layer=gitlab clone-failed"
     exit_code=1
   else
-    github_url=$(build_url "$CA_GITHUB_BASE" "$name")
+    github_url=""
+    for owner in $CA_GITHUB_BASES; do
+      candidate="$(build_url "$(printf "$CA_GITHUB_SRC" "$owner")" "$name")"
+      if git ls-remote "$candidate" HEAD >/dev/null 2>&1; then github_url="$candidate"; break; fi
+    done
+    [[ -n "$github_url" ]] || github_url="$(build_url "$CA_GITHUB_BASE" "$name")"
     gh_head=$(git ls-remote "$github_url" HEAD 2>/dev/null | awk '{print $1}' || true)
     if [[ -z "$gh_head" ]] || ! git --git-dir="$drill_dir" cat-file -e "$gh_head" 2>/dev/null; then
       log "drill:mismatch head $name layer=github head-missing"
