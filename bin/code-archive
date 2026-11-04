@@ -28,8 +28,9 @@ if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
 fi
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="/root/workspaces/tools/bin/code-archive" CA_ASKPASS=1
 # Owner split (repositories moved to arwox-labs 03.11.2026): --changed always
-# reads a list per owner of CA_GITHUB_BASES (the first owner wins a duplicate
-# name) and never reduces that list — CA_GITHUB_BASE only serves the by-name
+# reads a list per owner of CA_GITHUB_BASES (a live archived=false copy beats
+# an archived=true one of the same name; among equal copies the first owner
+# wins) and never reduces that list — CA_GITHUB_BASE only serves the by-name
 # mode. legacy_single marks an old single-base caller and keeps its exit-2
 # behaviour on a failed list, nothing else.
 CA_GITHUB_BASE_EXT="${CA_GITHUB_BASE:-}"
@@ -661,9 +662,14 @@ if [[ "${1:-}" == "--changed" ]]; then
     state_write "$count_file" "$cur"
     cat "$list_file" >> "$combined"
   done
-  # The first owner in CA_GITHUB_BASES wins a duplicate name; a later repeat is
-  # skipped, counted in skipped and journaled as skip:dup:<owner>. The mirror
-  # stays flat: $CA_REPOS_DIR/<name>.git.
+  # Dedup with one seen_names for both passes: a live copy (archived=false)
+  # always beats an archived=true copy of the same name, whatever the owner
+  # order, so the rows are read in two passes — first all archived=false rows,
+  # then all archived=true rows, owner order kept inside each pass (among equal
+  # copies the first owner in CA_GITHUB_BASES still wins). A later repeat is
+  # skipped, counted in skipped and journaled as skip:dup:<owner>; an archived
+  # row whose name a live row already took gives skip:dup:<owner> of the
+  # archived owner. The mirror stays flat: $CA_REPOS_DIR/<name>.git.
   declare -A seen_names=()
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
@@ -695,7 +701,7 @@ if [[ "${1:-}" == "--changed" ]]; then
     if [[ "$result" == ok* ]]; then
       state_write "$CA_STATE_DIR/$name.pushed_at" "$pushed"
     fi
-  done < "$combined"
+  done < <(awk -F'\t' '$NF == "false"' "$combined"; awk -F'\t' '$NF != "false"' "$combined")
   # U7b: one consolidated owner message per night pass listing repos that moved
   # into failure (names are deduped by the .fail marker in process_one).
   if (( ${#changed_failed[@]} > 0 )); then
