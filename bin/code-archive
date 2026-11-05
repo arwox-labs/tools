@@ -490,12 +490,12 @@ align_github_remote(){
 }
 # List file of one owner for --changed: a provided CA_LIST_DIR/<owner>.tsv
 # (tests), the legacy single CA_LIST_FILE, or the owner's repositories from
-# GitHub. /users/<owner>/repos returns public repositories only, so the listing
-# uses /user/repos with the owner and organization_member affiliations and
-# filters by .owner.login; the row format is
+# GitHub. A personal owner is the authenticated account (listed via
+# /user/repos?affiliation=owner); any other owner is an organization (listed via
+# /orgs/<owner>/repos), both including private repositories. Row format is
 # "<owner>\t<name>\t<pushed_at>\t<size_kb>\t<archived>".
 fetch_list(){
-  local owner="$1" out
+  local owner="$1" out endpoint self_login
   if [[ -n "${CA_LIST_DIR:-}" ]]; then
     [[ -f "$CA_LIST_DIR/$owner.tsv" ]] || return 1
     printf '%s\n' "$CA_LIST_DIR/$owner.tsv"
@@ -505,8 +505,17 @@ fetch_list(){
     printf '%s\n' "$CA_LIST_FILE"
     return 0
   fi
+  # Personal owner = authenticated account; any other owner = organization.
+  # Each list is fetched from the endpoint that returns that owner's private
+  # repositories, so one owner's credential failure does not hide the other.
+  self_login="$(gh api user --jq .login 2>/dev/null || true)"
+  if [[ "$owner" == "$self_login" ]]; then
+    endpoint="/user/repos?affiliation=owner&per_page=100"
+  else
+    endpoint="/orgs/$owner/repos?per_page=100"
+  fi
   out="$CA_STATE_DIR/list-$owner.tmp.$$"
-  if ! gh api --paginate "/user/repos?affiliation=owner,organization_member&per_page=100" \
+  if ! gh api --paginate "$endpoint" \
        | jq -r --arg o "$owner" '.[] | select(.owner.login == $o) | [.owner.login, .name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$out"; then
     rm -f "$out"
     return 1
