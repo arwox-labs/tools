@@ -40,6 +40,46 @@ ok=0
 total=0
 p(){ echo "PASS $1"; ok=$((ok+1)); total=$((total+1)); }
 f(){ echo "FAIL $1"; total=$((total+1)); }
+# Notification contract (e8c6ec9): one owner message is a five-line block that
+# starts with `🔴 code-archive · <scenario>` and carries Что/Ошибка/Действие/
+# Агенту. "Exactly one notification" is therefore a block count, not a line
+# count; the block helper also rejects a message that lost a mandatory field.
+notify_blocks(){
+  local n
+  n=$(grep -cF '🔴 code-archive' "$1" 2>/dev/null) || n=0
+  printf '%s' "${n:-0}"
+}
+# notify_contract <notify.out> <expected-blocks> — true only when the file holds
+# exactly that many blocks AND every block carries all four mandatory fields.
+notify_contract(){
+  local file="$1" want="$2" n
+  n=$(notify_blocks "$file")
+  [[ "$n" == "$want" ]] || return 1
+  awk -v want="$want" '
+    function flush() { if (inblk && !(w && e && d && a)) bad=1 }
+    /^🔴 code-archive/ { flush(); inblk=1; w=e=d=a=0; nblk++; next }
+    !inblk { next }
+    /^Что: / { w=1 }
+    /^Ошибка: / { e=1 }
+    /^Действие: / { d=1 }
+    /^Агенту: / { a=1 }
+    END { flush(); exit (bad || nblk != want) }
+  ' "$file"
+}
+# notify_last_contract <notify.out> — true when the LAST notification block
+# carries all four mandatory fields; pairs with a block-count delta so a check
+# asserts the shape of the message it just caused, not older ones.
+notify_last_contract(){
+  awk '
+    /^🔴 code-archive/ { have=1; buf="" }
+    have { buf = buf " " $0 }
+    END {
+      if (!have) exit 1
+      n = (buf ~ /Что: /) + (buf ~ /Ошибка: /) + (buf ~ /Действие: /) + (buf ~ /Агенту: /)
+      exit (n != 4)
+    }
+  ' "$1"
+}
 # Check 1: first run with valid token
 out=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc=$?
 s=$(git --git-dir="$T/github/demo.git" rev-parse main v1)
@@ -303,7 +343,7 @@ mv -f "$T/github/demo.git" "$T/github/demo.git.hidden"
 out16b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 PATH="$T/stub16b:$PATH" "$bin/code-archive" demo 2>&1); rc16b=$?
 mv -f "$T/github/demo.git.hidden" "$T/github/demo.git"
 if [[ $rc16b == 1 ]] && grep -qF 'demo err:fetch layer=auth' <<<"$out16b" \
-   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]]; then
+   && notify_contract "$T/state/notify.out" 1; then
   p 16b
 else
   f 16b
@@ -556,14 +596,15 @@ git --git-dir="$T/gitlab/weekly50.git" update-ref -d refs/heads/extra50
 printf '%s\n' 2026-10-03T01:00:00Z > "$T/state50/weekly50.pushed_at"
 rm -f "$T/state50/drill.fail" "$T/state50/notify.out"
 out50a=$(env "${localenv[@]}" CA_STATE_DIR=$T/state50 CA_DRILL_DIR=$T/drill50 CA_LIST_FILE=$T/list50.tsv CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc50a=$?
-first50=$(wc -l < "$T/state50/notify.out" 2>/dev/null || echo 0)
+first50=$(notify_blocks "$T/state50/notify.out")
 printf '%s\n' 2026-10-03T01:00:00Z > "$T/state50/weekly50.pushed_at"
 out50b=$(env "${localenv[@]}" CA_STATE_DIR=$T/state50 CA_DRILL_DIR=$T/drill50 CA_LIST_FILE=$T/list50.tsv CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc50b=$?
-second50=$(wc -l < "$T/state50/notify.out" 2>/dev/null || echo 0)
+second50=$(notify_blocks "$T/state50/notify.out")
 git --git-dir="$T/gitlab/weekly50.git" update-ref refs/heads/extra50 "$(git --git-dir="$T/repos/weekly50.git" rev-parse refs/heads/extra50)"
 printf '%s\n' 2026-10-03T01:00:00Z > "$T/state50/weekly50.pushed_at"
 out50c=$(env "${localenv[@]}" CA_STATE_DIR=$T/state50 CA_DRILL_DIR=$T/drill50 CA_LIST_FILE=$T/list50.tsv CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc50c=$?
 if [[ $rc50a == 1 && $rc50b == 1 && $rc50c == 0 && $first50 == 1 && $second50 == 1 ]] \
+   && notify_contract "$T/state50/notify.out" 1 \
    && grep -qF 'drill:mismatch incomplete weekly50 layer=gitlab 1 missing' <<<"$out50a" \
    && [[ -e "$T/state50/weekly50.pushed_at" ]] && [[ ! -e "$T/state50/drill.fail" ]]; then
   p 50
@@ -594,7 +635,7 @@ out36b=$(env "${localenv[@]}" "$bin/code-archive" once36 2>&1); rc36b=$?
 gitlab_ok
 if [[ $rc36a == 1 ]] && [[ $rc36b == 1 ]] \
    && [[ -f "$T/state/once36.fail" ]] \
-   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]] \
+   && notify_contract "$T/state/notify.out" 1 \
    && grep -qF 'once36' "$T/state/notify.out"; then
   p 36
 else
@@ -615,7 +656,7 @@ gitlab_ok
 if [[ $rc37 == 1 ]] \
    && [[ -f "$T/state/night37a.fail" ]] \
    && [[ -f "$T/state/night37b.fail" ]] \
-   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]] \
+   && notify_contract "$T/state/notify.out" 1 \
    && grep -qF 'night37a' "$T/state/notify.out" \
    && grep -qF 'night37b' "$T/state/notify.out"; then
   p 37
@@ -805,12 +846,13 @@ fi
 mkdir -p "$T/stubgh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$T/stubgh/gh"
 chmod +x "$T/stubgh/gh"
-before45=$(wc -l < "$T/state/notify.out")
+before45=$(notify_blocks "$T/state/notify.out")
 out45=$(env "${localenv[@]}" PATH="$T/stubgh:$PATH" "$bin/code-archive" --changed 2>&1); rc45=$?
-after45=$(wc -l < "$T/state/notify.out")
+after45=$(notify_blocks "$T/state/notify.out")
 if [[ $rc45 == 2 ]] \
    && [[ "$(grep -c 'err:list-fetch' "$T/log/code-archive.log" || true)" == 1 ]] \
-   && [[ $((after45 - before45)) == 1 ]]; then
+   && [[ $((after45 - before45)) == 1 ]] \
+   && notify_last_contract "$T/state/notify.out"; then
   p 45
 else
   f 45
@@ -877,13 +919,13 @@ printf '%s\n' "${GH47_OUT:?}" >&2
 exit 1
 STUB
 chmod +x "$T/stub47/git" "$T/stub47/gh"
-before47=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+before47=$(notify_blocks "$T/state/notify.out")
 out47m=$(env "${localenv[@]}" PATH="$T/stub47:$PATH" REALGIT47="$realgit47" \
          GH47_OUT='gh: Not Found (HTTP 404)' "$bin/code-archive" newmiss47 2>&1); rc47m=$?
-mid47=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+mid47=$(notify_blocks "$T/state/notify.out")
 out47d=$(env "${localenv[@]}" PATH="$T/stub47:$PATH" REALGIT47="$realgit47" \
          GH47_OUT='gh: Forbidden (HTTP 403)' "$bin/code-archive" newdeny47 2>&1); rc47d=$?
-after47=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+after47=$(notify_blocks "$T/state/notify.out")
 out47a=$(env "${localenv[@]}" CA_ASKPASS=1 PATH="$T/stub47:$PATH" REALGIT47="$realgit47" \
          "$bin/code-archive" --drill x 2>&1); rc47a=$?
 nf47=no; grep -Fq 'newmiss47 err:not-found' "$T/log/code-archive.log" && nf47=yes
@@ -892,7 +934,8 @@ nd47=no; grep -qF 'newdeny47 err:' "$T/log/code-archive.log" && \
 if [[ $rc47m == 1 && $nf47 == yes && $mid47 == $before47 \
    && ! -e "$T/repos/newmiss47.git" && ! -e "$T/state/newmiss47.fail" \
    && $rc47d == 1 && $nd47 == yes && $((after47 - before47)) == 1 \
-   && $rc47a == 64 ]]; then
+   && $rc47a == 64 ]] \
+   && notify_last_contract "$T/state/notify.out"; then
   p 47
 else
   f 47
