@@ -47,6 +47,7 @@ CA_GITLAB_BASE="${CA_GITLAB_BASE:-https://gitlab.com/arwox24-group}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
+CA_LAST_OK="${CA_LAST_OK:-/root/workspaces/system/services/gitmirror/last-ok}"
 CA_NOTIFY_ENV="${CA_NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}"
 mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
 reason(){
@@ -488,6 +489,30 @@ align_github_remote(){
   printf '%s\n' "$line" >> "$CA_LOG"
   return 0
 }
+# Preflight for a --changed pass (the only mode that reads the GitHub lists):
+# an unauthorized `gh` fails every owner the same way and the night pass is
+# lost. 3 attempts (10s, 30s); on the last miss the caller notifies and exits
+# before any state is touched, so the previous pass keeps its last-ok marker.
+preflight_reason=""
+preflight_gh_auth(){
+  local attempt out
+  for attempt in 1 2 3; do
+    if out="$(gh api user --jq .login 2>&1)" && [[ -n "$out" && "$out" != *[[:space:]]* ]]; then
+      return 0
+    fi
+    # gh prints the API error body before its own "gh: ..." line (sometimes on
+    # the same line); keep that line so the journal carries the real reason.
+    if [[ "$out" == *"gh: "* ]]; then
+      preflight_reason="${out##*gh: }"
+    else
+      preflight_reason="$(reason "$out")"
+    fi
+    if (( attempt < 3 )); then
+      if (( attempt == 1 )); then sleep 10; else sleep 30; fi
+    fi
+  done
+  return 1
+}
 # List file of one owner for --changed: a provided CA_LIST_DIR/<owner>.tsv
 # (tests), the legacy single CA_LIST_FILE, or the owner's repositories from
 # GitHub. A personal owner is the authenticated account (listed via
@@ -495,7 +520,7 @@ align_github_remote(){
 # /orgs/<owner>/repos), both including private repositories. Row format is
 # "<owner>\t<name>\t<pushed_at>\t<size_kb>\t<archived>".
 fetch_list(){
-  local owner="$1" out endpoint self_login
+  local owner="$1" out endpoint self_login attempt
   if [[ -n "${CA_LIST_DIR:-}" ]]; then
     [[ -f "$CA_LIST_DIR/$owner.tsv" ]] || return 1
     printf '%s\n' "$CA_LIST_DIR/$owner.tsv"
@@ -515,12 +540,20 @@ fetch_list(){
     endpoint="/orgs/$owner/repos?per_page=100"
   fi
   out="$CA_STATE_DIR/list-$owner.tmp.$$"
-  if ! gh api --paginate "$endpoint" \
-       | jq -r --arg o "$owner" '.[] | select(.owner.login == $o) | [.owner.login, .name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$out"; then
+  # 3 attempts (5s, 15s) so one transient gh/API failure does not drop the
+  # owner from the night pass; a hard failure is still err:list-fetch.
+  for attempt in 1 2 3; do
+    if gh api --paginate "$endpoint" \
+         | jq -r --arg o "$owner" '.[] | select(.owner.login == $o) | [.owner.login, .name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$out"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
     rm -f "$out"
-    return 1
-  fi
-  printf '%s\n' "$out"
+    if (( attempt < 3 )); then
+      if (( attempt == 1 )); then sleep 5; else sleep 15; fi
+    fi
+  done
+  return 1
 }
 # U7c/D15: --protect-all — protect the `*` branch across every project of the
 # GitLab group. The group's projects are paged (per_page=100) via the API and
@@ -625,6 +658,29 @@ if [[ "${1:-}" == "--changed" ]]; then
   sources_line="$(date +%F_%T) sources owners=$CA_GITHUB_BASES"
   printf '%s\n' "$sources_line"
   printf '%s\n' "$sources_line" >> "$CA_LOG"
+  # Freshness: a missing night pass (pm2 never started it, or the pass died
+  # silently) is visible only by the age of the last good pass. More than 26
+  # hours (one night plus a margin) is reported, then the pass continues.
+  if [[ -f "$CA_LAST_OK" ]]; then
+    last_ok_ts="$(<"$CA_LAST_OK")"
+    if [[ "$last_ok_ts" =~ ^[0-9]+$ ]]; then
+      age=$(( $(date +%s) - last_ok_ts ))
+      if (( age > 26 * 3600 )); then
+        notify_send "предыдущий проход бэкапа не отработал $(( age / 3600 )) часов"
+      fi
+    fi
+  fi
+  # Preflight: without a working gh no owner's list can be read. Stop before
+  # touching repository state so the last good pass keeps its last-ok marker.
+  # Skipped when the list comes from a file (CA_LIST_DIR / CA_LIST_FILE) and for
+  # the legacy single-base caller, which keeps its own exit-2 list contract.
+  if (( legacy_single == 0 )) && [[ -z "${CA_LIST_DIR:-}" && -z "${CA_LIST_FILE:-}" ]] \
+     && ! preflight_gh_auth; then
+    jowner=""; name="gh"; result=err:list-fetch; error_reason="${preflight_reason:-gh api user failed}"; journal_local
+    notify_send "gh не авторизован, список репозиториев недоступен"
+    echo "err:gh-auth" >&2
+    exit 2
+  fi
   # D3 one-time migration: the legacy unsuffixed list-count is the baseline of
   # the old single source arwoxbx24; it is copied to list-count-arwoxbx24 and
   # the old file is kept as is.
@@ -731,7 +787,7 @@ fi
 sum="=== pass $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
 printf '%s\n' "$sum"
 printf '%s\n' "$sum" >> "$CA_LOG"
-if (( err == 0 )); then state_write "${CA_LAST_OK:-/root/workspaces/system/services/gitmirror/last-ok}" "$(date +%s)"; fi
+if (( err == 0 )); then state_write "$CA_LAST_OK" "$(date +%s)"; fi
 pass_rc=$(( err > 0 ? 1 : 0 ))
 drill_rc=0
 if (( changed )) && [[ $(date +%u) == "${CA_DRILL_DOW:-1}" ]]; then
