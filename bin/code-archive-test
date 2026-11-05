@@ -9,7 +9,7 @@ bin=$(cd -- "$(dirname -- "$0")" && pwd)
 T="${T:-/tmp/test-code-archive-$$}"
 export CA_GITLAB_BASE="$T/gitlab-early"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab" "$T/gitlab-early"
+mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab" "$T/gitlab-early" "$T/nohooks"
 export CA_LOG="$T/log/code-archive.log"
 export CA_STATE_DIR="$T/state"
 for _iso in "$CA_LOG" "$CA_STATE_DIR"; do
@@ -19,10 +19,17 @@ for _iso in "$CA_LOG" "$CA_STATE_DIR"; do
   esac
 done
 export CA_LAST_OK="$T/last-ok"
+# Owner split (f40b4a5): the real code reads one source list per owner of
+# CA_GITHUB_BASES. Every fixture lives in $T/github, so the test declares a
+# single fixture owner whose source template resolves to that directory; the
+# checks never reach GitHub (gh api / ssh) and never see a second owner's rows.
+export CA_GITHUB_BASES=github
+export CA_GITHUB_SRC="$T/%s"
 git init -q --bare "$T/github/demo.git"
 git init -q "$T/work"
 git -C "$T/work" config user.email t@t
 git -C "$T/work" config user.name t
+git -C "$T/work" config core.hooksPath "$T/nohooks"
 git -C "$T/work" checkout -q -b main
 git -C "$T/work" commit -q --allow-empty -m init
 git -C "$T/work" tag v1
@@ -70,6 +77,7 @@ git clone -q "$T/github/demo.git" "$T/rewrite"
 git -C "$T/rewrite" checkout -q main
 git -C "$T/rewrite" config user.email t@t
 git -C "$T/rewrite" config user.name t
+git -C "$T/rewrite" config core.hooksPath "$T/nohooks"
 old_main=$(git --git-dir="$T/repos/demo.git" rev-parse main)
 git -C "$T/rewrite" commit -q --amend --allow-empty -m x
 git -C "$T/rewrite" push -qf origin main
@@ -154,6 +162,7 @@ for r in alpha bravo charlie delta; do mkgh "$r"; done
 git -C "$T" init -q seed
 git -C "$T/seed" config user.email t@t
 git -C "$T/seed" config user.name t
+git -C "$T/seed" config core.hooksPath "$T/nohooks"
 git -C "$T/seed" checkout -q -b main
 git -C "$T/seed" commit -q --allow-empty -m init
 for r in alpha bravo charlie delta; do git -C "$T/seed" push -q "$T/github/$r.git" main; done
@@ -185,10 +194,14 @@ fi
 # err:list-shrunk, code 2, last-ok untouched. CA_GITHUB_BASE stays set here on
 # purpose: unsuffixed only marks a legacy single-base caller, and only that
 # caller still exits 2 on a shrunken list (CA_GITHUB_BASES reads no source here).
-printf '%s\n' '10' > "$T/state/list-count-arwox-labs"
-printf '%s\n' '10' > "$T/state/list-count-arwoxbx24"
+# Its own state dir keeps the baseline 10 away from the later checks. The
+# exported fixture owner is dropped for this call: only a legacy single-base
+# caller (CA_GITHUB_BASE set, CA_GITHUB_BASES unset) still exits 2 on a shrink.
+mkdir -p "$T/state12"
+printf '%s\n' '10' > "$T/state12/list-count-arwox-labs"
+printf '%s\n' '10' > "$T/state12/list-count-arwoxbx24"
 last12=$(cat "$T/last-ok")
-out12=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv "$bin/code-archive" --changed 2>&1); rc12=$?
+out12=$(env -u CA_GITHUB_BASES CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state12 CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv "$bin/code-archive" --changed 2>&1); rc12=$?
 if [[ $rc12 == 2 ]] \
    && grep -qF 'err:list-shrunk layer=github 10 to 4' <<<"$out12" \
    && [[ "$(cat "$T/last-ok")" == "$last12" ]]; then
@@ -426,6 +439,7 @@ git init -q --bare "$T/github/reverse.git"
 git clone -q "$T/github/reverse.git" "$T/reverse"
 git -C "$T/reverse" config user.email t@t
 git -C "$T/reverse" config user.name t
+git -C "$T/reverse" config core.hooksPath "$T/nohooks"
 git -C "$T/reverse" checkout -q -b main
 git -C "$T/reverse" commit -q --allow-empty -m init
 git -C "$T/reverse" update-ref refs/heads/foo/bar HEAD
@@ -451,11 +465,12 @@ git init -q --bare "$T/github/rewrite-state.git"
 git clone -q "$T/github/rewrite-state.git" "$T/rewrite-state"
 git -C "$T/rewrite-state" config user.email t@t
 git -C "$T/rewrite-state" config user.name t
+git -C "$T/rewrite-state" config core.hooksPath "$T/nohooks"
 git -C "$T/rewrite-state" checkout -q -b main
 git -C "$T/rewrite-state" commit -q --allow-empty -m init
 git -C "$T/rewrite-state" push -q origin main
 printf '%s\t%s\t%s\t%s\n' 'rewrite-state' '2026-10-02T20:00:00Z' '1' 'false' > "$T/list25.tsv"
-printf '%s\n' '1' > "$T/state/list-count"
+printf '%s\n' '1' > "$T/state/list-count-github"
 out25a=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list25.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc25a=$?
 git -C "$T/rewrite-state" commit -q --amend --allow-empty -m rewritten
 git -C "$T/rewrite-state" push -qf origin main
@@ -593,7 +608,7 @@ rm -f "$T/state/notify.out" "$T/state/night37a.fail" "$T/state/night37b.fail"
 printf '%s\t%s\t%s\t%s\n' \
   'night37a' '2026-10-02T22:00:00Z' '10' 'false' \
   'night37b' '2026-10-02T22:01:00Z' '10' 'false' > "$T/list37.tsv"
-printf '%s\n' '2' > "$T/state/list-count"
+printf '%s\n' '2' > "$T/state/list-count-github"
 gitlab_fail
 out37=$(env "${localenv[@]}" CA_LIST_FILE=$T/list37.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc37=$?
 gitlab_ok
