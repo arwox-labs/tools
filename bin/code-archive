@@ -330,7 +330,7 @@ mirror_name(){
     fi
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
-  # U8a: push to GitLab without rewrite; on rejection, retry with rewritten/<timestamp>/<name>
+  # U8a: push to GitLab without force; rejected refs are archived separately.
   if [[ "$CA_GITLAB_BASE" == /* ]]; then
     # Local path mode: create bare repo if missing
     gl_path="$CA_GITLAB_BASE/$name.git"
@@ -375,17 +375,14 @@ mirror_name(){
   if (( ${#missing[@]} )); then
     result=err:incomplete; error_reason="${#missing[@]} missing"; return 1
   fi
-  if [[ -n "$rewritten_first" ]]; then
-    result="ok:gitlab-rewritten $rewritten_first"
-  fi
   return 0
 }
 # U8a: push refspecs (`$@`) from repo $1 to $gl_dest without force. A rejected
 # ref that is not a fast-forward is archived under rewritten/<ts>/<dest-name>
 # (the name is taken from the destination side, so `refs/heads/server/*`
-# becomes server/<branch>) rather than failing the pass. On a hard unhandled
-# failure sets $result to err:gitlab and returns 1; $rewritten_first is '' after
-# a clean push.
+# becomes server/<branch>) rather than failing the pass. The success result
+# carries each rejected destination ref. On a hard unhandled failure sets
+# $result to err:gitlab and returns 1.
 # U7f: expand a (possibly wildcard) refspec `src:dst` into explicit `src:dst`
 # pairs over the refs currently present in repo $1 (`*` in src and dst align). A
 # ref deleted mid-push is simply absent from the result instead of failing the
@@ -409,6 +406,7 @@ gl_push(){
   local repo="$1"; shift
   local line refspec ref_src ref_dest ref_category dest_name ts rewritten_ref retry_out retry_rc obj
   local rr rs retry_refs
+  local -a rewritten_refs=()
   push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
   # U7f: a source ref vanished between composing the ref list and the push
   # ("error: src refspec <ref> does not match any"), e.g. ship deletes a merged
@@ -423,7 +421,6 @@ gl_push(){
   fi
   # U7b: a rejected push whose barrier reports a leaked secret fails as err:secret.
   if [[ "$push_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$push_out"; return 1; fi
-  rewritten_first=""
   while read -r line; do
     [[ "$line" == "!"* ]] || continue
     refspec=$(printf '%s\n' "$line" | awk '{print $2}')
@@ -433,7 +430,7 @@ gl_push(){
     # rewritten ref — mark it handled and keep going (idempotent retries).
     obj="$(git --git-dir="$repo" rev-parse "$ref_src" 2>/dev/null || true)"
     if git --git-dir="$repo" ls-remote "$gl_dest" 'refs/*/rewritten/*' 2>/dev/null | awk -v o="$obj" '$1 == o { found=1 } END { exit !found }'; then
-      rewritten_first="rewritten/existing"
+      rewritten_refs+=("$ref_dest")
       continue
     fi
     dest_rest="${ref_dest#refs/}"    # heads/main | heads/server/main
@@ -445,10 +442,13 @@ gl_push(){
     if [[ "$retry_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$retry_out"; return 1; fi
     printf '%s\n' "$retry_out" | mask
     if [[ "$retry_rc" != 0 ]]; then result="err:gitlab"; error_reason="$retry_out"; return 1; fi
-    if [[ -z "$rewritten_first" ]]; then rewritten_first="rewritten/$ts/$dest_name"; fi
+    rewritten_refs+=("$ref_dest")
   done <<< "$push_out"
-  if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
+  if (( ${#rewritten_refs[@]} == 0 )) && [[ "$push_rc" != 0 ]]; then
     result="err:gitlab"; error_reason="$push_out"; return 1
+  fi
+  if (( ${#rewritten_refs[@]} )); then
+    result="ok:gitlab-rewritten ${rewritten_refs[*]}"
   fi
   return 0
 }
@@ -556,7 +556,9 @@ protect_all(){
 # Mirror one name under a free-space floor `min` (KB); prints and logs its
 # journal line and bumps ok/err. On a successful mirror `result` is ok/ok:created.
 process_one(){
-  local name="$1" min="$2" owner="${3:-}" failed=0
+  local name="$1" min="$2" owner="${3:-}" failed=0 ref seen found
+  local rewritten_state new_rewritten_text
+  local -a rewritten_refs=() notified_refs=() new_rewritten_refs=()
   mkdir -p "$CA_STATE_DIR"
   exec {lockfd}>"${CA_STATE_DIR}/$name.lock"
   flock "$lockfd"
@@ -572,6 +574,29 @@ process_one(){
     fi
   else
     result=err:no-space; error_reason="available=${avail:-unknown}KB minimum=${min}KB"; err=$((err+1)); failed=1
+  fi
+  if [[ "$result" == "ok:gitlab-rewritten "* ]]; then
+    read -r -a rewritten_refs <<< "${result#ok:gitlab-rewritten }"
+    if [[ -f "$CA_STATE_DIR/$name.rewritten" ]]; then
+      while IFS= read -r ref; do
+        [[ "$ref" == refs/* ]] && notified_refs+=("$ref")
+      done < "$CA_STATE_DIR/$name.rewritten"
+    fi
+    for ref in "${rewritten_refs[@]}"; do
+      found=0
+      for seen in "${notified_refs[@]}"; do
+        if [[ "$seen" == "$ref" ]]; then found=1; break; fi
+      done
+      if (( ! found )); then
+        notified_refs+=("$ref")
+        new_rewritten_refs+=("$ref")
+      fi
+    done
+    if (( ${#new_rewritten_refs[@]} )); then
+      new_rewritten_text="$(printf '%s\n' "${notified_refs[@]}")"
+      state_write "$CA_STATE_DIR/$name.rewritten" "$new_rewritten_text"
+      notify_send "$(printf '🔴 code-archive\nВ чём дело: push отклонён (non-fast-forward) для %s: %s\nОшибка: GitLab отверг обновление целевого ref.\nДействие: новая вершина сохранена в архивной копии GitLab; проверьте расхождение ветки.\nСтрока агенту: проверьте и согласуйте целевой ref вручную.' "$name" "${new_rewritten_refs[*]}")"
+    fi
   fi
   # U7b: first failure creates state/<name>.fail and notifies; --changed
   # collects names for one pass summary).
