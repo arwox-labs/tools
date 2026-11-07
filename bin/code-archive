@@ -556,9 +556,7 @@ protect_all(){
 # Mirror one name under a free-space floor `min` (KB); prints and logs its
 # journal line and bumps ok/err. On a successful mirror `result` is ok/ok:created.
 process_one(){
-  local name="$1" min="$2" owner="${3:-}" failed=0 ref seen found
-  local rewritten_state new_rewritten_text
-  local -a rewritten_refs=() notified_refs=() new_rewritten_refs=()
+  local name="$1" min="$2" owner="${3:-}" failed=0
   mkdir -p "$CA_STATE_DIR"
   exec {lockfd}>"${CA_STATE_DIR}/$name.lock"
   flock "$lockfd"
@@ -574,29 +572,6 @@ process_one(){
     fi
   else
     result=err:no-space; error_reason="available=${avail:-unknown}KB minimum=${min}KB"; err=$((err+1)); failed=1
-  fi
-  if [[ "$result" == "ok:gitlab-rewritten "* ]]; then
-    read -r -a rewritten_refs <<< "${result#ok:gitlab-rewritten }"
-    if [[ -f "$CA_STATE_DIR/$name.rewritten" ]]; then
-      while IFS= read -r ref; do
-        [[ "$ref" == refs/* ]] && notified_refs+=("$ref")
-      done < "$CA_STATE_DIR/$name.rewritten"
-    fi
-    for ref in "${rewritten_refs[@]}"; do
-      found=0
-      for seen in "${notified_refs[@]}"; do
-        if [[ "$seen" == "$ref" ]]; then found=1; break; fi
-      done
-      if (( ! found )); then
-        notified_refs+=("$ref")
-        new_rewritten_refs+=("$ref")
-      fi
-    done
-    if (( ${#new_rewritten_refs[@]} )); then
-      new_rewritten_text="$(printf '%s\n' "${notified_refs[@]}")"
-      state_write "$CA_STATE_DIR/$name.rewritten" "$new_rewritten_text"
-      notify_send "$(printf '🔴 code-archive\nВ чём дело: push отклонён (non-fast-forward) для %s: %s\nОшибка: GitLab отверг обновление целевого ref.\nДействие: новая вершина сохранена в архивной копии GitLab; проверьте расхождение ветки.\nСтрока агенту: проверьте и согласуйте целевой ref вручную.' "$name" "${new_rewritten_refs[*]}")"
-    fi
   fi
   # U7b: first failure creates state/<name>.fail and notifies; --changed
   # collects names for one pass summary).
