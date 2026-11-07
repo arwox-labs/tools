@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+export GIT_CONFIG_NOSYSTEM=1
 export SAFE_DELETE_GH=false
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 d=/tmp/safe-delete-test-$$
@@ -1041,5 +1042,33 @@ printf 'dirty\n' > "$d/wt129/dirty.txt"
 out129=$("$bin/safe-delete" --bk "$d/bk129" worktree "$d/wt129" 2>&1); r129=$?
 if [[ $r129 == 2 && $out129 == *'— route:'* && $out129 == *'status --short'* && -d $d/wt129 ]]; then echo 'PASS T129 squash_dirty_refused'; ok=$((ok+1)); else echo "FAIL T129: rc=$r129 dir=$([[ -d $d/wt129 ]] && echo 1) out=${out129:0:200}"; fi
 
-[[ $ok == 127 ]] || exit 1
+# T130: codex/* merged into origin/<base> (--no-ff, pushed) is deletable, gone locally
+git -C "$d/w" checkout -q -b main 2>/dev/null || git -C "$d/w" checkout -q main
+git -C "$d/w" commit -q --allow-empty -m "chore(sdtest): base"
+git -C "$d/w" push -q origin main
+git -C "$d/w" checkout -q -b codex/merged
+git -C "$d/w" commit -q --allow-empty -m "chore(sdtest): merged work"
+git -C "$d/w" checkout -q main
+git -C "$d/w" merge -q --no-ff codex/merged
+git -C "$d/w" push -q origin main codex/merged
+out130=$("$bin/safe-delete" --bk "$bk" branch "$d/w" codex/merged 2>&1); r130=$?
+gone130=$(git -C "$d/w" rev-parse --verify --quiet refs/heads/codex/merged)
+if [[ $r130 == 0 && -z $gone130 ]]; then echo 'PASS T130 codex_merged_deleted'; ok=$((ok+1)); else echo "FAIL T130: rc=$r130 br=$gone130 out=${out130:0:200}"; fi
+
+# T131: codex/* with an unmerged commit still refuses with the rule message
+git -C "$d/w" checkout -q -b codex/unmerged main
+git -C "$d/w" commit -q --allow-empty -m "chore(sdtest): unmerged"
+out131=$("$bin/safe-delete" --bk "$bk" branch "$d/w" codex/unmerged 2>&1); r131=$?
+kept131=$(git -C "$d/w" branch --list codex/unmerged)
+if [[ $r131 == 2 && $out131 == *'отказ по правилу'* && -n $kept131 ]]; then echo 'PASS T131 codex_unmerged_refused'; ok=$((ok+1)); else echo "FAIL T131: rc=$r131 br=$kept131 out=${out131:0:200}"; fi
+
+# T132: regression — main and an unmerged codex/feature still refuse (rc 2)
+out132a=$("$bin/safe-delete" --bk "$bk" branch "$d/w" main 2>&1); r132a=$?
+git -C "$d/w" checkout -q -b codex/feature main
+git -C "$d/w" commit -q --allow-empty -m "chore(sdtest): feature"
+out132b=$("$bin/safe-delete" --bk "$bk" branch "$d/w" codex/feature 2>&1); r132b=$?
+kept132=$(git -C "$d/w" branch --list main)
+if [[ $r132a == 2 && $r132b == 2 && $out132a == *'отказ по правилу'* && $out132b == *'отказ по правилу'* && -n $kept132 ]]; then echo 'PASS T132 main_and_codex_feature_refused'; ok=$((ok+1)); else echo "FAIL T132: main=$r132a feat=$r132b br=$kept132 outa=${out132a:0:120} outb=${out132b:0:120}"; fi
+
+[[ $ok == 130 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
