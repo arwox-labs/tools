@@ -407,7 +407,7 @@ gl_push(){
   local line refspec ref_src ref_dest ref_category dest_name ts rewritten_ref retry_out retry_rc obj
   local rr rs retry_refs
   local -a rewritten_refs=()
-  push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
+  push_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
   # U7f: a source ref vanished between composing the ref list and the push
   # ("error: src refspec <ref> does not match any"), e.g. ship deletes a merged
   # branch while pushing. Not a failure: re-push once against an explicit
@@ -417,7 +417,7 @@ gl_push(){
     for rs in "$@"; do
       while read -r rr; do retry_refs+=("$rr"); done < <(expand_refspec "$repo" "$rs")
     done
-    push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "${retry_refs[@]}" 2>&1); push_rc=$?
+    push_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "${retry_refs[@]}" 2>&1); push_rc=$?
   fi
   # U7b: a rejected push whose barrier reports a leaked secret fails as err:secret.
   if [[ "$push_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$push_out"; return 1; fi
@@ -438,7 +438,7 @@ gl_push(){
     dest_name="${dest_rest#*/}"      # main | server/main
     ts="$(date +%Y%m%d-%H%M%S)"
     rewritten_ref="refs/$ref_category/rewritten/$ts/$dest_name"
-    retry_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
+    retry_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
     if [[ "$retry_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$retry_out"; return 1; fi
     printf '%s\n' "$retry_out" | mask
     if [[ "$retry_rc" != 0 ]]; then result="err:gitlab"; error_reason="$retry_out"; return 1; fi
