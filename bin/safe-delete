@@ -513,7 +513,7 @@ $f"; done
     repo=$1; br=$2
     git check-ref-format --branch "$br" >/dev/null || refuse "некорректное имя ветки: $br"
     [[ $br == -* || $br == refs/* || $br == heads/* || $br == *'*'* || $br == *'?'* || $br == *'['* ]] && refuse "некорректное имя ветки: $br"
-    [[ $br == main || $br == master || $br == HEAD || $br == codex/* ]] && refuse "отказ по правилу: $br"
+    [[ $br == main || $br == master || $br == HEAD ]] && refuse "отказ по правилу: $br"
     if [[ $GH == true ]]; then
       url=$(git -C "$repo" remote get-url origin) || exit 1
       rr=$(repo_of "$url")
@@ -537,6 +537,7 @@ $f"; done
     shah=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}') || exit 1
     if [[ -z $shah ]]; then
       sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=
+      if [[ $br == codex/* ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
       arch=$(git -C "$repo" ls-remote origin "refs/tags/archive/${br//\//-}-*" | awk -v s="$sha" '$1==s{print $1}') || exit 1
       if [[ -z $arch ]]; then
         git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null || {
@@ -558,8 +559,10 @@ $f"; done
       log branch "$(realpath "$repo"):$br" "$sha" - - - deleted || exit 1
       exit 0
     fi
-    sha=$shah
+    sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=$shah
     git -C "$repo" fetch -q origin "$br" "${base#origin/}" || exit 1
+    if [[ $br == codex/* ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
+    sha=$shah
     est=$(git -C "$repo" bundle create - "refs/remotes/origin/$br" --not "$base" 2>/dev/null | wc -c)
     avail=$(df --output=avail -B1 "$BK" | tail -1)
     (( avail >= 2*est )) || fail "мало места в $BK"
@@ -577,7 +580,13 @@ $f"; done
     log branch "$obj" "$sha" "$tag" "$backup" "$bsum" backup-ok
     git -C "$repo" push -q --force-with-lease="refs/heads/$br:$shah" origin ":refs/heads/$br" || exit 1
     left=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}')
-    [[ -z $left ]] && { log branch "$obj" "$sha" "$tag" "$backup" "$bsum" deleted; exit 0; }
+    if [[ -z $left ]]; then
+      if [[ $br == codex/* ]]; then
+        local_sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || local_sha=
+        [[ -z $local_sha ]] || git -C "$repo" update-ref -d "refs/heads/$br" "$local_sha" || exit 1
+      fi
+      log branch "$obj" "$sha" "$tag" "$backup" "$bsum" deleted; exit 0
+    fi
     exit 1
     ;;
   *) refuse 'usage' ;;
