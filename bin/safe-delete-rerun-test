@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+export GIT_CONFIG_NOSYSTEM=1
 export SAFE_DELETE_GH=false
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/safe-delete-rerun.XXXXXX)
