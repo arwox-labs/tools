@@ -362,7 +362,7 @@ mirror_name(){
   # U8a: push all heads+tags without force; on a "not fast-forward" rejection
   # archive the rejected ref under rewritten/<ts>/<dest-name> and keep going.
   gl_push "$dst" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' || return 1
-  if ! gl_refs="$(git --git-dir="$dst" ls-remote --heads --tags "$gl_dest" 2>&1)"; then
+  if ! gl_refs="$(timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" ls-remote --heads --tags "$gl_dest" 2>&1)"; then
     result=err:gitlab; error_reason="$gl_refs"; return 1
   fi
   missing=()
@@ -429,7 +429,7 @@ gl_push(){
     # Already archived the exact object? Then a re-push must not add a second
     # rewritten ref — mark it handled and keep going (idempotent retries).
     obj="$(git --git-dir="$repo" rev-parse "$ref_src" 2>/dev/null || true)"
-    if git --git-dir="$repo" ls-remote "$gl_dest" 'refs/*/rewritten/*' 2>/dev/null | awk -v o="$obj" '$1 == o { found=1 } END { exit !found }'; then
+    if timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" ls-remote "$gl_dest" 'refs/*/rewritten/*' 2>/dev/null | awk -v o="$obj" '$1 == o { found=1 } END { exit !found }'; then
       rewritten_refs+=("$ref_dest")
       continue
     fi
