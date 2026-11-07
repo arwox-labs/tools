@@ -343,7 +343,8 @@ case "$cmd" in
     common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || refuse "не worktree: $wt"; [[ $common != .git ]] || refuse "не linked worktree: $wt"
     common=$(realpath -e "$common") || exit 1
     for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(proc_state "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
-    mkt || exit 1; { git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } >"$tf"
+    sha=$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null) || sha=
+    mkt || exit 1; { git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; [[ -z $sha ]] || git -C "$wt" diff -z --name-only --cached HEAD; } >"$tf"
     mapfile -d '' rels <"$tf"; mkt || exit 1; ff=$tf
     for rel in "${rels[@]}"; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu >"$ff"
     mapfile -d '' files <"$ff"
@@ -352,8 +353,8 @@ $f"; done
     resolve_all "${files[@]}"; files=("${rs[@]}")
     git_batch "${files[@]}" || exit 1
     copies=(); for f in "${files[@]}"; do [[ -n ${gblob[$f]:-} ]] && continue; check_resolved "$f"; [[ -f $f ]] || refuse "не обычный файл: $f"; copies+=("$f"); done
-    squash=
-    if git -C "$wt" ls-tree -r --name-only HEAD | grep -qE '(^|/)clients/' && [[ -z $(git -C "$wt" branch -r --contains HEAD 2>/dev/null) ]]; then
+    squash=; ref=-
+    if [[ -n $sha ]] && git -C "$wt" ls-tree -r --name-only HEAD | grep -qE '(^|/)clients/' && [[ -z $(git -C "$wt" branch -r --contains HEAD 2>/dev/null) ]]; then
       [[ -z $(git -C "$wt" status --porcelain 2>/dev/null) ]] || refuse "worktree не на remote с незакоммиченными изменениями: $wt — route: git -C $wt status --short"
       git -C "$wt" fetch -q origin main 2>/dev/null || refuse "не получен origin/main: $wt — route: git -C $wt fetch origin main"
       mb=$(git -C "$wt" merge-base HEAD origin/main 2>/dev/null) || refuse "нет общей истории с origin/main: $wt — route: git -C $wt log --oneline --all"
@@ -362,8 +363,10 @@ $f"; done
       br=$(git -C "$wt" symbolic-ref -q --short HEAD) || refuse "worktree без ветки: $wt — route: git -C $wt status"
       squash=1
     fi
-    sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
-    git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
+    if [[ -n $sha ]]; then
+      ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
+      git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
+    else sha=-; fi
     if [[ -n $squash ]]; then
       est=$(git -C "$wt" bundle create - HEAD --not origin/main 2>/dev/null | wc -c)
       avail=$(df --output=avail -B1 "$BK" | tail -1)
@@ -534,6 +537,11 @@ $f"; done
       done
     fi
     [[ -n $base ]] || refuse "нет основной ветки на origin: $repo"
+    wt_holder=$(git -C "$repo" worktree list --porcelain | awk -v b="refs/heads/$br" '$1=="worktree" {prev=$0} $1=="branch" && $2==b {print prev; exit}' | head -1)
+    if [[ -n $wt_holder ]]; then
+      wt_holder=${wt_holder#worktree }
+      refuse "отказ по правилу: $br зачекаутена в $wt_holder"
+    fi
     shah=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}') || exit 1
     if [[ -z $shah ]]; then
       sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=

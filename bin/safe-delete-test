@@ -18,6 +18,7 @@ git -C "$d/w" push -q origin main
 git -C "$d/w" checkout -q -b feat/x
 git -C "$d/w" commit -q --allow-empty -m feat
 git -C "$d/w" push -q origin feat/x
+git -C "$d/w" checkout -q main
 bk="$d/bk"
 ok=0
 
@@ -346,12 +347,15 @@ if [[ $r44 == 2 && $err == *'запрещённый сегмент'* && -d $d/wt
 git -C "$d/w" worktree remove --force "$d/wt-dirty-beads"
 
 # T45: local branch merged into origin/main and already gone from origin
+git -C "$d/w" fetch -q origin main:refs/remotes/origin/main
+git -C "$d/w" checkout -q -B main refs/remotes/origin/main
 git -C "$d/w" checkout -q -b done/z main
 git -C "$d/w" commit -q --allow-empty -m t45
 git -C "$d/w" checkout -q main
 git -C "$d/w" merge -q --ff-only done/z
 git -C "$d/w" push -q origin main done/z
 git -C "$d/w" push -q origin :done/z
+git -C "$d/w" fetch -q origin main:refs/remotes/origin/main
 "$bin/safe-delete" --bk "$bk" branch "$d/w" done/z; rc=$?
 gone45=$(git -C "$d/w" branch --list done/z)
 if [[ $rc == 0 && -z $gone45 ]]; then echo 'PASS T45'; ok=$((ok+1)); else echo "FAIL T45: rc=$rc br=$gone45"; fi
@@ -1043,7 +1047,8 @@ out129=$("$bin/safe-delete" --bk "$d/bk129" worktree "$d/wt129" 2>&1); r129=$?
 if [[ $r129 == 2 && $out129 == *'— route:'* && $out129 == *'status --short'* && -d $d/wt129 ]]; then echo 'PASS T129 squash_dirty_refused'; ok=$((ok+1)); else echo "FAIL T129: rc=$r129 dir=$([[ -d $d/wt129 ]] && echo 1) out=${out129:0:200}"; fi
 
 # T130: codex/* merged into origin/<base> (--no-ff, pushed) is deletable, gone locally
-git -C "$d/w" checkout -q -b main 2>/dev/null || git -C "$d/w" checkout -q main
+git -C "$d/w" fetch -q origin main:refs/remotes/origin/main
+git -C "$d/w" checkout -q -B main refs/remotes/origin/main
 git -C "$d/w" commit -q --allow-empty -m "chore(sdtest): base"
 git -C "$d/w" push -q origin main
 git -C "$d/w" checkout -q -b codex/merged
@@ -1051,6 +1056,7 @@ git -C "$d/w" commit -q --allow-empty -m "chore(sdtest): merged work"
 git -C "$d/w" checkout -q main
 git -C "$d/w" merge -q --no-ff codex/merged
 git -C "$d/w" push -q origin main codex/merged
+git -C "$d/w" fetch -q origin main:refs/remotes/origin/main
 out130=$("$bin/safe-delete" --bk "$bk" branch "$d/w" codex/merged 2>&1); r130=$?
 gone130=$(git -C "$d/w" rev-parse --verify --quiet refs/heads/codex/merged)
 if [[ $r130 == 0 && -z $gone130 ]]; then echo 'PASS T130 codex_merged_deleted'; ok=$((ok+1)); else echo "FAIL T130: rc=$r130 br=$gone130 out=${out130:0:200}"; fi
@@ -1070,5 +1076,21 @@ out132b=$("$bin/safe-delete" --bk "$bk" branch "$d/w" codex/feature 2>&1); r132b
 kept132=$(git -C "$d/w" branch --list main)
 if [[ $r132a == 2 && $r132b == 2 && $out132a == *'отказ по правилу'* && $out132b == *'отказ по правилу'* && -n $kept132 ]]; then echo 'PASS T132 main_and_codex_feature_refused'; ok=$((ok+1)); else echo "FAIL T132: main=$r132a feat=$r132b br=$kept132 outa=${out132a:0:120} outb=${out132b:0:120}"; fi
 
-[[ $ok == 130 ]] || exit 1
+# T133: a branch checked out in a second worktree must be refused, not deleted
+git -C "$d/w" checkout -q main
+git -C "$d/w" worktree add "$d/wt-held" -b codex/wt-held
+out133=$("$bin/safe-delete" --bk "$bk" branch "$d/w" codex/wt-held 2>&1); r133=$?
+kept133=$(git -C "$d/w" branch --list codex/wt-held)
+if [[ $r133 == 2 && $out133 == *"$d/wt-held"* && $out133 == *'safe-delete:'* && -d "$d/wt-held" && -n $kept133 ]]; then echo 'PASS T133 branch_held_by_worktree_refused'; ok=$((ok+1)); else echo "FAIL T133: rc=$r133 dir=$([[ -d $d/wt-held ]] && echo 1) br=$kept133 out=${out133:0:200}"; fi
+
+# T134: a linked worktree whose HEAD points at a gone ref is still deleted (rc 0)
+git -C "$d/w" worktree add "$d/wt-broken" -b codex/broken
+wp134=$(git -C "$d/w" worktree list --porcelain | awk -v p="$d/wt-broken" '$1 == "worktree" && $2 == p { print $2; exit }')
+gh134="$d/w/.git/worktrees/$(basename -- "$wp134")"
+[[ -n $wp134 && -d $gh134 ]] || gh134=
+if [[ -n $gh134 ]]; then printf 'ref: refs/heads/codex/gone\n' > "$gh134/HEAD"; fi
+out134=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-broken" 2>&1); r134=$?
+if [[ $r134 == 0 && -n $gh134 && ! -d "$d/wt-broken" ]]; then echo 'PASS T134 worktree_broken_head_deleted'; ok=$((ok+1)); else echo "FAIL T134: rc=$r134 gh=$gh134 dir=$([[ -d $d/wt-broken ]] && echo 1) out=${out134:0:200}"; fi
+
+[[ $ok == 132 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
