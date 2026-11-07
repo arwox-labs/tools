@@ -906,7 +906,8 @@ else
   f 52
 fi
 
-# Check 53: a rewritten branch notifies once, then stays silent for the same ref.
+# Check 53: a rewritten branch never notifies — only the journal line and the
+# GitLab archive refs/heads/rewritten/<ts>/<branch> survive.
 mkgh "nonff53"
 git init -q "$T/nonff53-work"
 git -C "$T/nonff53-work" config user.email t@t
@@ -923,10 +924,14 @@ out53c=$(env "${localenv[@]}" "$bin/code-archive" nonff53 2>&1); rc53c=$?
 fixture_git -C "$T/nonff53-work" commit -q --amend --allow-empty -m rewritten-two
 git -C "$T/nonff53-work" push -qf "$T/github/nonff53.git" feature-alert
 out53d=$(env "${localenv[@]}" "$bin/code-archive" nonff53 2>&1); rc53d=$?
+blocks53=$(notify_blocks "$T/state/notify.out" 2>/dev/null); blocks53=${blocks53:-0}
+tip53=$(git -C "$T/nonff53-work" rev-parse feature-alert)
+rw53=$(git ls-remote "$T/gitlab/nonff53.git" 'refs/heads/rewritten/*' 2>/dev/null) || rw53=""
 if [[ $rc53a == 0 && $rc53b == 0 && $rc53c == 0 && $rc53d == 0 ]] \
-   && [[ "$(notify_blocks "$T/state/notify.out")" == 1 ]] \
+   && [[ "$blocks53" == 0 ]] \
    && grep -qF 'ok:gitlab-rewritten refs/heads/feature-alert' "$T/log/code-archive.log" \
-   && [[ "$(cat "$T/state/nonff53.rewritten")" == refs/heads/feature-alert ]]; then
+   && [[ -n "$rw53" ]] && grep -qF "$tip53" <<<"$rw53" \
+   && [[ ! -f "$T/state/nonff53.rewritten" ]]; then
   p 53
 else
   f 53
