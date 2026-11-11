@@ -16,4 +16,6 @@ jobs:
       - run: python3 tests/test_agent_tools.py
       - run: npx --yes jscpd@5.4.1 --baseline-from-ref origin/main --fail-on-new-clones=0 bin scripts
       - run: bash bin/code-channel-test
+      - run: bash bin/safe-delete-test
+      - run: bash bin/sdk-agent-test
       - run: bash bin/place-files-test
