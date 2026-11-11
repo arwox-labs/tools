@@ -261,8 +261,13 @@ ga_branch_unmerged(){ # <branch> in current GIT_DIR — 0 if unmerged vs prod (g
 }
 
 ga_live_sync(){ # <name> <merge_sha> <merge_ms> [<pm2>] — пост-шаги ship; печатает <rc> <step>
-	local name=$1 merge_sha=$2 merge_ms=$3 reload=${4:-} rc=0 step=live up
-	"$bin/git-sync" "$name" >/dev/null
+	local name=$1 merge_sha=$2 merge_ms=$3 reload=${4:-} rc=0 step=live up sync
+	sync=$("$bin/git-sync" "$name")
+	if [[ -z $reload && $sync == *skip:active* ]]; then
+		echo 'live:deferred active' >&2
+		printf '0 live\n'
+		return
+	fi
 	"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; rc=60; step=live; }
 	if [[ -n $reload ]]; then
 		pm2 startOrReload "${GA_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}" --only "$reload" >/dev/null
