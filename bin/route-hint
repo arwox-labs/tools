@@ -3,27 +3,34 @@
 set -u
 
 if [[ ${1:-} == --help ]]; then
-  echo "usage: bin/route-hint [--help]"
+  echo "usage: bin/route-hint [--pre] [--help]"
+  echo "--pre: PreToolUse hook. Matches .tool_input.command against deny rows (cmd_regex), prints the route as additionalContext. Never blocks."
   echo "PostToolUseFailure hook. Reads hook JSON from stdin, matches .error"
   echo "against failure rows of ROUTES_FILE (default /root/workspaces/projects/.claude/rules/routes.json),"
   echo "prints hookSpecificOutput JSON on match, nothing otherwise. Always fails open (rc 0)."
   exit 0
 fi
 
+if [[ ${1:-} == --pre ]]; then
+  event=PreToolUse; src='.tool_input.command // empty'; kind=deny; field=cmd_regex
+else
+  event=PostToolUseFailure; src='.error // empty'; kind=failure; field=error_regex
+fi
+
 fail() {
-  jq -cn '{hookSpecificOutput:{hookEventName:"PostToolUseFailure",additionalContext:("route-hint (" + $id + "): " + $route)}}' \
-    --arg id "$1" --arg route "$2" 2>/dev/null
+  jq -cn '{hookSpecificOutput:{hookEventName:$ev,additionalContext:("route-hint (" + $id + "): " + $route)}}' \
+    --arg ev "$event" --arg id "$1" --arg route "$2" 2>/dev/null
   exit 0
 }
 
 payload=$(cat 2>/dev/null) || exit 0
 rules_file=${ROUTES_FILE:-/root/workspaces/projects/.claude/rules/routes.json}
-error=$(printf '%s' "$payload" | jq -r '.error // empty' 2>/dev/null) || exit 0
-[[ -n $error ]] || exit 0
+subject=$(printf '%s' "$payload" | jq -r "$src" 2>/dev/null) || exit 0
+[[ -n $subject ]] || exit 0
 [[ -r $rules_file ]] || exit 0
 
-match=$(jq -r --arg e "$error" '
-  [.routes[]? | select((.kind == "failure") and ((.error_regex // "") | type == "string") and (.error_regex as $re | ($e | test($re))))] | .[0] // empty
+match=$(jq -r --arg s "$subject" --arg k "$kind" --arg f "$field" '
+  [.routes[]? | select((.kind == $k) and ((.[$f] // "") | type == "string") and (.[$f] as $re | (try ($s | test($re)) catch false)))] | .[0] // empty
 ' "$rules_file" 2>/dev/null) || exit 0
 [[ -n $match && $match != null ]] || exit 0
 

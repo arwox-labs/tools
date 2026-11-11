@@ -42,4 +42,33 @@ if [[ $rc == 0 && -z $out ]]; then echo 'PASS deny-only'; ((ok++)); else echo "F
 h=$(route-hint --help); rc=$?
 if [[ $rc == 0 && $h == *'usage:'* ]]; then echo 'PASS help'; ((ok++)); else echo "FAIL help: exit $rc out=<$h>"; fi
 
-[[ $ok == 5 ]]
+jq -n '{routes:[{id:"bdc",kind:"deny",cmd_regex:"^bd -C ",route:"put -C after the subcommand"}]}' >"$rules"
+pre_payload='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bd -C /x close a1"}}'
+out=$(printf '%s' "$pre_payload" | ROUTES_FILE="$rules" route-hint --pre); rc=$?
+if [[ $rc == 0 ]] &&
+   jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and
+          (.hookSpecificOutput.additionalContext | contains("route-hint (bdc):") and contains("put -C after the subcommand"))' <<<"$out" >/dev/null &&
+   [[ $(printf '%s' "$out" | jq -r 'keys | join(",")') == hookSpecificOutput ]] &&
+   [[ $(printf '%s' "$out" | jq -r '.hookSpecificOutput | keys | sort | join(",")') == 'additionalContext,hookEventName' ]]; then
+  echo 'PASS pre-match'; ((ok++))
+else echo "FAIL pre-match: exit $rc out=<$out>"; fi
+
+out=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bd close a1 -C /x"}}' | ROUTES_FILE="$rules" route-hint --pre); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS pre-no-match'; ((ok++)); else echo "FAIL pre-no-match: exit $rc out=<$out>"; fi
+
+jq -n '{routes:[{id:"f1",kind:"failure",error_regex:"bd close",route:"failure route"}]}' >"$rules"
+out=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bd close a1"}}' | ROUTES_FILE="$rules" route-hint --pre); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS pre-kind'; ((ok++)); else echo "FAIL pre-kind: exit $rc out=<$out>"; fi
+
+jq -n '{routes:[{id:"bad",kind:"deny",cmd_regex:"(",route:"unused"},{id:"ok",kind:"deny",cmd_regex:"^bd ",route:"second route"}]}' >"$rules"
+out=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bd close a1"}}' | ROUTES_FILE="$rules" route-hint --pre); rc=$?
+if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.additionalContext | contains("route-hint (ok):")' <<<"$out" >/dev/null; then echo 'PASS pre-bad-regex'; ((ok++)); else echo "FAIL pre-bad-regex: exit $rc out=<$out>"; fi
+
+out=$(printf '{bad json' | ROUTES_FILE="$rules" route-hint --pre); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS pre-malformed'; ((ok++)); else echo "FAIL pre-malformed: exit $rc out=<$out>"; fi
+
+jq -n '{routes:[{id:"bad",kind:"failure",error_regex:"(",route:"unused"},{id:"ok",kind:"failure",error_regex:"No such file",route:"second route"}]}' >"$rules"
+out=$(printf '%s' "$payload" | ROUTES_FILE="$rules" route-hint); rc=$?
+if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.additionalContext | contains("route-hint (ok):")' <<<"$out" >/dev/null; then echo 'PASS post-bad-regex'; ((ok++)); else echo "FAIL post-bad-regex: exit $rc out=<$out>"; fi
+
+[[ $ok == 11 ]]
