@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# mcp-update — upgrade MCP server packages that are installed locally in <root>/<name>-mcp.
+# Local install only: opencode.jsonc denies global npm/pnpm installs by design ("без глобальных пакетов"),
+# and every MCP server in this contour runs from its own tools/<name>-mcp directory.
+set -euo pipefail
+
+ROOT="${MCP_ROOT:-/root/workspaces/tools}"
+
+usage() {
+  cat <<'EOF'
+usage: mcp-update <name>... | --all | --list | --help
+  <name>    directory <root>/<name>-mcp whose package.json declares the server package
+  --all     every installed <root>/*-mcp directory
+  --list    print package and installed version, change nothing
+Upgrade uses: pnpm --dir <dir> update --latest <package>
+Global installs stay denied by policy. Restart the opencode session to load a new version.
+EOF
+}
+
+dir_of() { printf '%s/%s-mcp' "$ROOT" "$1"; }
+
+pkg_of() {
+  node -e 'const p=require(process.argv[1]+"/package.json");const d=Object.keys(p.dependencies||{});if(!d.length)process.exit(3);console.log(d[0])' "$1"
+}
+
+ver_of() {
+  node -e 'try{console.log(require(process.argv[1]+"/node_modules/"+process.argv[2]+"/package.json").version)}catch(e){console.log("not-installed")}' "$1" "$2"
+}
+
+update_one() {
+  local name="$1" dir pkg before after
+  dir=$(dir_of "$name")
+  [ -f "$dir/package.json" ] || { echo "FAILED: $dir/package.json not found" >&2; return 1; }
+  pkg=$(pkg_of "$dir") || { echo "FAILED: no dependency declared in $dir/package.json" >&2; return 1; }
+  before=$(ver_of "$dir" "$pkg")
+  pnpm --dir "$dir" update --latest "$pkg" >/dev/null
+  after=$(ver_of "$dir" "$pkg")
+  echo "$name: $pkg $before -> $after"
+  return 0
+}
+
+list_one() {
+  local name="$1" dir pkg
+  dir=$(dir_of "$name")
+  [ -f "$dir/package.json" ] || return 0
+  pkg=$(pkg_of "$dir") || return 0
+  echo "$name: $pkg $(ver_of "$dir" "$pkg")"
+}
+
+command -v pnpm >/dev/null || { echo "FAILED: pnpm not found" >&2; exit 1; }
+
+case "${1:---help}" in
+  -h|--help) usage; exit 0 ;;
+  --list)
+    for d in "$ROOT"/*-mcp; do
+      [ -d "$d" ] && list_one "$(basename "$d" -mcp)"
+    done
+    exit 0
+    ;;
+  --all)
+    rc=0
+    for d in "$ROOT"/*-mcp; do
+      [ -d "$d" ] || continue
+      update_one "$(basename "$d" -mcp)" || rc=1
+    done
+    exit "$rc"
+    ;;
+  -*) usage; exit 2 ;;
+  *)
+    rc=0
+    for name in "$@"; do update_one "$name" || rc=1; done
+    exit "$rc"
+    ;;
+esac
