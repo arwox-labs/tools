@@ -44,9 +44,15 @@ if [[ -z $repo || -z $paths || ! -d $repo || ( $commit_set -eq 1 && -z $commit )
   exit 2
 fi
 
+git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo "close-gate: $repo is not a git repository" >&2; exit 2; }
+
 status=$(GIT_OPTIONAL_LOCKS=0 git -C "$repo" status --porcelain -- "$paths" 2>/dev/null)
 status_rc=$?
-if [[ -n $status || $status_rc -ne 0 ]] || ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+if (( status_rc != 0 )); then
+  printf 'close-gate: git status failed in %s\n' "$repo" >&2
+  exit 2
+fi
+if [[ -n $status ]]; then
   printf 'close-gate: %s has uncommitted changes under %s\n' "$repo" "$paths" >&2
   exit 1
 fi

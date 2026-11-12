@@ -63,5 +63,16 @@ case_result "$((rc == 0))" '--help rc=0'
 rc=$?
 case_result "$((rc == 2))" 'missing repo path rc=2'
 
+mkdir "$SANDBOX/not-a-repo"
+output=$("$gate" --repo "$SANDBOX/not-a-repo" --paths target.txt 2>&1)
+rc=$?
+case_result "$((rc == 2))" 'non-repository path rc=2'
+case_result "$([[ $output == *'is not a git repository'* ]] && echo 1 || echo 0)" 'non-repository message'
+
+output=$("$gate" --repo "$REPO" --paths ':(invalid)' 2>&1)
+rc=$?
+case_result "$((rc == 2))" 'git status failure rc=2'
+case_result "$([[ $output == *"close-gate: git status failed in $REPO"* ]] && echo 1 || echo 0)" 'git status failure message'
+
 printf 'PASS %s/%s\n' "$PASS" "$((PASS + FAIL))"
 ((FAIL == 0))
