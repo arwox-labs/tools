@@ -52,6 +52,8 @@
 | `copier` (9.18.2) | каркас проекта из готового шаблона по answers-файлу; обновление проекта | `/root/workspaces/tools/copier-venv/bin/copier copy --defaults <шаблон> <каталог>`, `… update` | все (владелец 26.09) | штатно |
 | ASSERT (`assert-ai` 0.3.0, responsibleai) | проверка ИИ-бота на уязвимости: взлом текстом (prompt injection), несанкционированные действия плагинов, помощь во взломе, утечка данных о людях и между пользователями, выдумывание фактов; испытан 04.10 на telegram-ai-bot (спека, отчёт, 9 конфигов — `projects/telegram-ai-bot/evals/assert/`, dcfg-d3qnd) | `/root/workspaces/sandbox/test-assert/.venv/bin/assert-ai estimate <конфиг>` — оценка токенов без вызова провайдера; прогон теста платный — только словом владельца после названной цены; установка в `sandbox/test-assert` (тестовая папка — не удалять, пока строка в реестре) | Claude (оркестратор), запуск — через субагента/Workflow | проба 04.10; судья gpt-4o-mini завышает вред — пометки сверять вручную |
 
+| `close-gate` (bin/close-gate) | одна команда «рабочая копия чиста и готова к доставке»: rc 0 только если `git -C <repo> status --porcelain -- <pathspec>` пуст и (при `--commit`) `git -C <repo> merge-base --is-ancestor <sha> origin/main` успешен; нарушение — rc 1 с одной строкой причины, ошибка вызова — rc 2, побочных эффектов нет | `close-gate --repo <path> --paths <pathspec> [--commit <sha>]`; `--help`; самотест `bin/close-gate-test` | Claude, Codex | штатно |
+
 ## 3. ЗАПРЕЩЕНО (машинно: Claude — managed deny; opencode — `permission.bash "*": deny`; Codex — его hooks.json по вердикту)
 | Форма | Почему | Замена |
 |---|---|---|
