@@ -42,7 +42,7 @@ update_one() {
 list_one() {
   local name="$1" dir pkg
   dir=$(dir_of "$name")
-  [ -f "$dir/package.json" ] || return 0
+  [ -f "$dir/package.json" ] || { echo "$name: source checkout only; not package-managed"; return 0; }
   pkg=$(pkg_of "$dir") || return 0
   echo "$name: $pkg $(ver_of "$dir" "$pkg")"
 }

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage: close-gate --repo <path> --paths <pathspec> [--commit <sha>]
+       close-gate --help
+EOF
+}
+
+repo=
+paths=
+commit=
+commit_set=0
+while (($#)); do
+  case $1 in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --repo|--paths|--commit)
+      option=$1
+      shift
+      if (($# == 0)) || [[ $1 == --* ]]; then
+        usage >&2
+        exit 2
+      fi
+      case $option in
+        --repo) repo=$1 ;;
+        --paths) paths=$1 ;;
+        --commit) commit=$1; commit_set=1 ;;
+      esac
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ -z $repo || -z $paths || ! -d $repo || ( $commit_set -eq 1 && -z $commit ) ]]; then
+  usage >&2
+  exit 2
+fi
+
+status=$(GIT_OPTIONAL_LOCKS=0 git -C "$repo" status --porcelain -- "$paths" 2>/dev/null)
+status_rc=$?
+if [[ -n $status || $status_rc -ne 0 ]] || ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+  printf 'close-gate: %s has uncommitted changes under %s\n' "$repo" "$paths" >&2
+  exit 1
+fi
+
+if [[ $commit_set -eq 1 ]] && ! git -C "$repo" merge-base --is-ancestor "$commit" origin/main >/dev/null 2>&1; then
+  printf 'close-gate: %s is not an ancestor of origin/main\n' "$commit" >&2
+  exit 1
+fi
