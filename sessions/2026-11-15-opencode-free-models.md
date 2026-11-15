@@ -17,3 +17,7 @@ Independent report-only review found no scoped correctness defect; five product 
 Selected architecture: retain existing code-channel and native global OpenCode config; explicit finite model alternatives, no automatic paid fallback. Kimi is future integration only; its current authentication was not changed. Other host sandbox permissions are outside this patch.
 
 Regression evidence: TMPDIR=<private task scratch> timeout 60s bash bin/code-channel-test completed rc0, PASS 102 checks; existing guard, fallback and permit cases retained. Independent report-only reviewer returned no findings. Product diff check passed.
+
+## Live acceptance limit
+
+All 102 regression checks and GitHub tools-smoke passed. A real OpenCode 2.2.7 wrapper run completed inference and its requested marker check, but reconciliation returned rc23: expected provider opencode-go, actual unknown. Direct native model calls work; the wrapper remains incomplete. Do not merge as an end-to-end fix until native session reconciliation is corrected and verified by a real wrapper run. The prerequisite metadata inspection was denied by current host policy; no bypass attempted.
