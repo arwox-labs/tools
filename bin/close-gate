@@ -3,7 +3,7 @@ set -u
 
 usage() {
   cat <<'EOF'
-Usage: close-gate --repo <path> --paths <pathspec> [--commit <sha>]
+usage: close-gate --repo <path> --paths <pathspec> [--commit <sha>]
        close-gate --help
 EOF
 }
