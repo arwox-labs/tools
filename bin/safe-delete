@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] init [--fast] <root> | <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -151,6 +151,128 @@ $p
   case $p in "$HOME"/.config/gh|"$HOME"/.config/gh/*|"$HOME"/.config/yandex-cloud|"$HOME"/.config/yandex-cloud/*|"$HOME"/.config/gcloud|"$HOME"/.config/gcloud/*) refuse "запрещённый сегмент: $p";; esac
 }
 client_pinned(){ local p; for p in "${client_pins[@]}"; do [[ -d $p || -n ${gblob[$p]:-} ]] || refuse "запрещённый сегмент: $p"; done; }
+inventory(){
+  python3 - "$BK" "$self" "$HOME" "$@" <<'PY'
+import fnmatch, glob, hashlib, json, os, stat, sys, tempfile, time
+bk, command, home, mode, *args = sys.argv[1:]
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+def blocked(path):
+    parts = path.split('/')
+    name = parts[-1]
+    return (any(p in {'secrets', 'hh-scoring', '.codex', '.git', '.beads', 'clients'} or p.startswith('.repowise') for p in parts)
+            or any(fnmatch.fnmatchcase(name, pattern) for pattern in ('.env*', '*.pem', '*.key', 'auth.json', 'hosts.yml', 'credentials*', '*token*'))
+            or path == command or path == bk or path.startswith(bk + '/')
+            or any(path == p or path.startswith(p + '/') for p in
+                   ('/etc/claude-code', home + '/.ssh', home + '/.config/gh', home + '/.config/yandex-cloud', home + '/.config/gcloud'))
+            or (path.startswith(home + '/.claude/') and fnmatch.fnmatchcase(name, 'settings*.json'))
+            or (path.startswith('/root/workspaces/git-dirs/') and any(p.endswith('.git') for p in parts)))
+def load(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 32 * 1024 * 1024:
+            raise ValueError('invalid snapshot file')
+        data = json.load(stream)
+    if (data.get('version') != 1 or not isinstance(data.get('root'), str)
+            or not os.path.isabs(data['root']) or os.path.normpath(data['root']) != data['root']
+            or not isinstance(data.get('directories'), dict) or '.' not in data['directories']
+            or not isinstance(data.get('excluded'), list) or not isinstance(data.get('scanned_at'), int)):
+        raise ValueError('invalid snapshot structure')
+    for path, metadata in data['directories'].items():
+        if (path != '.' and (not path or os.path.isabs(path) or any(p in ('', '.', '..') for p in path.split('/')))
+                or not isinstance(metadata, list) or len(metadata) != 5 or any(type(n) is not int for n in metadata)):
+            raise ValueError('invalid directory metadata')
+    if any(not isinstance(p, str) or not p or os.path.isabs(p) or any(s in ('', '.', '..') for s in p.split('/')) for p in data['excluded']):
+        raise ValueError('invalid excluded boundary')
+    return data
+# Scope ceiling: encountered-directory guidance; upgrade only for an explicit global-drift requirement.
+if mode == 'advise':
+    for snapshot in glob.glob(os.path.join(bk, 'inventory-*.json')):
+        try:
+            data = load(snapshot)
+        except (OSError, ValueError, TypeError, AttributeError):
+            print('safe-delete: inventory unavailable; manual refresh: safe-delete init <root>', file=sys.stderr)
+            continue
+        root = data['root']
+        unknown = set()
+        for raw in args:
+            path = os.path.abspath(raw)
+            try:
+                if not stat.S_ISDIR(os.lstat(path).st_mode):
+                    path = os.path.dirname(path)
+            except OSError:
+                continue
+            if path == root or path.startswith(root + '/'):
+                rel = os.path.relpath(path, root)
+                if rel not in data['directories']:
+                    unknown.add(path)
+        if unknown:
+            print('safe-delete: inventory unknown directories=%d; manual refresh: safe-delete init %s' % (len(unknown), root), file=sys.stderr)
+    sys.exit(0)
+try:
+    raw, root = args
+    # Open every component without following symlinks, including before '..'.
+    fd = os.open('/' if os.path.isabs(raw) else '.', flags)
+    try:
+        for part in raw.split('/'):
+            if part in ('', '.'):
+                continue
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        initial = os.fstat(fd)
+        if blocked(root):
+            raise ValueError('protected inventory root')
+        snapshot = os.path.join(bk, 'inventory-' + hashlib.sha256(os.fsencode(root)).hexdigest() + '.json')
+        if mode == 'fast':
+            data = load(snapshot)
+            if data['root'] != root or data['directories']['.'][:2] != [initial.st_dev, initial.st_ino]:
+                raise ValueError('incompatible inventory root')
+            print('inventory reused; not a fresh scan: directories=%d excluded=%d root=%s' % (len(data['directories']), len(data['excluded']), root))
+        else:
+            directories, excluded = {}, []
+            def scan(current, rel):
+                before = os.fstat(current)
+                directories[rel] = [before.st_dev, before.st_ino, before.st_mode, before.st_mtime_ns, before.st_ctime_ns]
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        child_rel = entry.name if rel == '.' else rel + '/' + entry.name
+                        if blocked(root + '/' + child_rel) or entry.is_symlink():
+                            excluded.append(child_rel)
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            child = os.open(entry.name, flags, dir_fd=current)
+                            try:
+                                observed = entry.stat(follow_symlinks=False)
+                                opened = os.fstat(child)
+                                if (observed.st_dev, observed.st_ino) != (opened.st_dev, opened.st_ino):
+                                    raise ValueError('directory changed during scan')
+                                scan(child, child_rel)
+                            finally:
+                                os.close(child)
+                after = os.fstat(current)
+                if (before.st_mtime_ns, before.st_ctime_ns) != (after.st_mtime_ns, after.st_ctime_ns):
+                    raise ValueError('directory changed during scan')
+            scan(fd, '.')
+            data = dict(version=1, root=root, directories=directories, excluded=excluded, scanned_at=int(time.time()))
+            temp_fd, temporary = tempfile.mkstemp(prefix='.inventory-', dir=bk)
+            try:
+                with os.fdopen(temp_fd, 'w') as stream:
+                    json.dump(data, stream, ensure_ascii=True)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, snapshot)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            print('inventory complete: directories=%d excluded=%d root=%s' % (len(directories), len(excluded), root))
+    finally:
+        os.close(fd)
+except (OSError, ValueError, TypeError, AttributeError, RecursionError) as error:
+    print('safe-delete: inventory incomplete/unavailable (%s); run full initialization: safe-delete init <root>' % error, file=sys.stderr)
+    sys.exit(2)
+PY
+}
 resolve_all(){
   rs=()
   (($#)) || return 0
@@ -253,7 +375,18 @@ if [[ ( $cmd == dir || $cmd == worktree ) && $# -gt 1 ]]; then
   exit 2
 fi
 
+case "$cmd" in file|dir|worktree|cache|tmp|link|dup)
+  if compgen -G "$BK/inventory-*.json" >/dev/null; then inventory advise "$@" || echo 'safe-delete: inventory advisory unavailable; manual refresh: safe-delete init <root>' >&2; fi
+esac
 case "$cmd" in
+  init)
+    inventory_mode=full
+    if [[ ${1:-} == --fast ]]; then inventory_mode=fast; shift; fi
+    [[ $# -eq 1 ]] || refuse 'usage: safe-delete init [--fast] <root>'
+    check_path "$1"; [[ -d $p ]] || refuse "not a directory: $p"
+    inventory "$inventory_mode" "$1" "$p"
+    exit $?
+    ;;
   repo-autodelete)
     [[ $# -ge 1 ]] || refuse 'usage'; repo=$1
     old=$(gh repo view "$repo" --json deleteBranchOnMerge -q .deleteBranchOnMerge) || exit 1

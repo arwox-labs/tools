@@ -36,5 +36,47 @@ printf 'not a dir\n' > "$c2"
 err2=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt2" 2>&1); r2=$?
 if [[ $r2 != 0 && -d $d/wt2 && -f "$d/wt2/sub/new.txt" ]]; then pass 2; else bad 2 "rc=$r2 $err2"; fi
 
+mkdir -p "$d/inventory/known" "$d/inventory/secrets/hidden" "$d/outside"
+ln -s "$d/outside" "$d/inventory/escape"
+out=$("$bin/safe-delete" --bk "$bk" init --fast "$d/inventory" 2>&1); rc=$?
+if [[ $rc != 0 && $out == *'init <root>'* ]]; then pass inventory-fast-missing; else bad inventory-fast-missing "rc=$rc $out"; fi
+out=$("$bin/safe-delete" --bk "$bk" init "$d/inventory" 2>&1); rc=$?
+if [[ $rc == 0 && $out == *'directories=2'* && $out == *'excluded=2'* ]]; then pass inventory-init; else bad inventory-init "rc=$rc $out"; fi
+mkdir -p "$d/inventory/new"
+out=$("$bin/safe-delete" --bk "$bk" init --fast "$d/inventory" 2>&1); rc=$?
+if [[ $rc == 0 && $out == *reused* && $out == *'not a fresh scan'* && $out == *'directories=2'* ]]; then pass inventory-fast-reuse; else bad inventory-fast-reuse "rc=$rc $out"; fi
+printf 'recoverable\n' > "$d/inventory/new/plain.txt"
+out=$("$bin/safe-delete" --bk "$bk" file "$d/inventory/new/plain.txt" 2>&1); rc=$?
+restore_n=$(awk -F '\t' '$2=="file" && $8=="deleted" {n=NR} END {print n}' "$bk/ledger.tsv")
+if [[ $rc == 0 && ! -e $d/inventory/new/plain.txt && $out == *'manual refresh'* ]]; then pass inventory-advisory-delete; else bad inventory-advisory-delete "rc=$rc $out"; fi
+out=$("$bin/safe-delete" --bk "$bk" restore "$restore_n" 2>&1); rc=$?
+if [[ $rc == 0 && $(cat "$d/inventory/new/plain.txt") == recoverable ]]; then pass inventory-restore; else bad inventory-restore "rc=$rc $out"; fi
+printf 'protected\n' > "$d/inventory/.env"
+out=$("$bin/safe-delete" --bk "$bk" file "$d/inventory/.env" 2>&1); rc=$?
+if [[ $rc == 2 && -f $d/inventory/.env ]]; then pass inventory-protected-delete; else bad inventory-protected-delete "rc=$rc $out"; fi
+for root in "$d/inventory/secrets" "$d/inventory/escape" "$d/inventory/escape/.."; do
+  out=$("$bin/safe-delete" --bk "$bk" init "$root" 2>&1); rc=$?
+  if [[ $rc == 2 ]]; then pass inventory-rejected-root; else bad inventory-rejected-root "rc=$rc $out"; fi
+done
+state=("$bk"/inventory-*.json)
+if [[ -f ${state[0]} ]]; then
+  before=$(sha256sum "${state[0]}")
+  nested="$d/inventory"
+  for ((i=0; i<40; i++)); do nested+=/deep; mkdir "$nested"; done
+  out=$( (ulimit -n 32; "$bin/safe-delete" --bk "$bk" init "$d/inventory") 2>&1); rc=$?
+  if [[ $rc != 0 && $out == *'inventory incomplete'* && $(sha256sum "${state[0]}") == "$before" ]]; then pass inventory-incomplete-preserves; else bad inventory-incomplete-preserves "rc=$rc $out"; fi
+  printf 'invalid\n' > "${state[0]}"
+  out=$("$bin/safe-delete" --bk "$bk" init --fast "$d/inventory" 2>&1); rc=$?
+  if [[ $rc != 0 && $out == *'init <root>'* ]]; then pass inventory-fast-corrupt; else bad inventory-fast-corrupt "rc=$rc $out"; fi
+else bad inventory-fast-corrupt 'snapshot missing'; fi
+mkdir "$d/fifo-root"
+key=$(printf %s "$d/fifo-root" | sha256sum); key=${key%% *}
+mkfifo "$bk/inventory-$key.json"
+out=$(timeout 2 "$bin/safe-delete" --bk "$bk" init --fast "$d/fifo-root" 2>&1); rc=$?
+if [[ $rc == 2 && $out == *'init <root>'* ]]; then pass inventory-fifo-fast; else bad inventory-fifo-fast "rc=$rc $out"; fi
+printf 'permitted\n' > "$d/fifo-root/plain.txt"
+out=$(timeout 2 "$bin/safe-delete" --bk "$bk" file "$d/fifo-root/plain.txt" 2>&1); rc=$?
+if [[ $rc == 0 && ! -e $d/fifo-root/plain.txt && $out == *'inventory unavailable'* ]]; then pass inventory-fifo-advisory; else bad inventory-fifo-advisory "rc=$rc $out"; fi
+
 echo "итог: PASS $ok, FAIL $fail"
 [[ $fail == 0 ]]

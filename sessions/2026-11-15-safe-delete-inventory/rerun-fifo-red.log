@@ -1,0 +1,19 @@
+5:35PM INF 0 commits scanned.
+5:35PM INF scanned ~5 bytes (5 bytes) in 212ms
+5:35PM INF no leaks found
+PASS 1
+PASS 2
+PASS inventory-fast-missing
+PASS inventory-init
+PASS inventory-fast-reuse
+PASS inventory-advisory-delete
+PASS inventory-restore
+PASS inventory-protected-delete
+PASS inventory-rejected-root
+PASS inventory-rejected-root
+PASS inventory-rejected-root
+PASS inventory-incomplete-preserves
+PASS inventory-fast-corrupt
+FAIL inventory-fifo-fast: rc=124 Terminated
+FAIL inventory-fifo-advisory: rc=124 Terminated
+итог: PASS 13, FAIL 2

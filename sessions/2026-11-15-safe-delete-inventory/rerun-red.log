@@ -1,0 +1,16 @@
+5:31PM INF 0 commits scanned.
+5:31PM INF scanned ~5 bytes (5 bytes) in 209ms
+5:31PM INF no leaks found
+PASS 1
+PASS 2
+FAIL inventory-fast-missing: rc=2 safe-delete: usage — route: safe-delete --help
+FAIL inventory-init: rc=2 safe-delete: usage — route: safe-delete --help
+FAIL inventory-fast-reuse: rc=2 safe-delete: usage — route: safe-delete --help
+FAIL inventory-advisory-delete: rc=0 удалено: /tmp/safe-delete-rerun.SFcBvZ/inventory/new/plain.txt | основание: копия /tmp/safe-delete-rerun.SFcBvZ/bk/files/20261115/tmp/safe-delete-rerun.SFcBvZ/inventory/new/plain.txt | восстановить: safe-delete restore 5
+PASS inventory-restore
+PASS inventory-protected-delete
+PASS inventory-rejected-root
+PASS inventory-rejected-root
+PASS inventory-rejected-root
+FAIL inventory-fast-corrupt: snapshot missing
+итог: PASS 7, FAIL 5

@@ -1,0 +1,1 @@
+bash -n bin/safe-delete bin/safe-delete-rerun-test: rc=0
