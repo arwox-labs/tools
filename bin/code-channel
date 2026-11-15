@@ -201,13 +201,13 @@ run_form() (
         local r=$1 pa= ma=
         local db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
         local row session
-        row=$(sqlite3 -readonly "$db" "select json_extract(model,'$.providerID')||'|'||json_extract(model,'$.id') from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
+        row=$(sqlite3 -readonly "$db" "select json_extract(model,'$.providerID')||'|'||json_extract(model,'$.id') from session_v2 where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
         if [[ -z $row ]]; then
-            row=$(sqlite3 -readonly "$db" "select json_extract(model,'$.providerID')||'|'||json_extract(model,'$.id') from session where directory='$project' and time_created >= $run_start_ms order by time_created desc limit 1" 2>/dev/null)
+            row=$(sqlite3 -readonly "$db" "select json_extract(model,'$.providerID')||'|'||json_extract(model,'$.id') from session_v2 where directory='$project' and time_created >= $run_start_ms order by time_created desc limit 1" 2>/dev/null)
         fi
         pa=${row%%|*}
         ma=${row#*|}
-        session=$(sqlite3 -readonly "$db" "select id from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
+        session=$(sqlite3 -readonly "$db" "select id from session_v2 where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
         write_journal "$pa" "$ma" "$r" "$session"
         if [[ -z $pa || $pa != "$provider" ]]; then
             printf 'code-channel: сверка провайдера не прошла: ожидался %s, факт %s — route: check OPENCODE_CONFIG/model\n' "$provider" "${pa:-?}" >&2
@@ -262,7 +262,7 @@ run_form() (
         oc_err=$(mktemp "${TMPDIR:-/tmp}/code-channel-ocerr-XXXXXX") || exit 3
         seg_before=$(form_snap)
         cc_pre=$(cc_status)
-        id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
+        id_sid_sql="select id from session_v2 where title='$id_run' order by time_created desc limit 1"
         while :; do
             printf '%s' "$oc_prompt" >"$pfile"
             guarded "$helper_scope" timeout "$run_timeout" env OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1 opencode --standalone run "${oc_args[@]}" --agent developer -m "$model" < "$pfile" 2>"$oc_err" | tee "$oc_out"; run=${PIPESTATUS[0]}

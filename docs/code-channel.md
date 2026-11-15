@@ -73,6 +73,7 @@ Go-запуск не тратит время на то, что воркеру н
 
 - `config/opencode-channel.json` выключает `snapshot`, `lsp` и `autoupdate` (`false`). Snapshots — undo для TUI; воркер коммитит обычным git. LSP и проверка обновлений в неинтерактивном прогоне не нужны.
 - The invocation uses `opencode --standalone run …` without external plugins.
+- OpenCode 2.2.7 session reconciliation reads `session_v2` (`model.providerID` and `model.id`), including resume-session lookup.
 - Только для процесса opencode заданы `OPENCODE_DISABLE_MODELS_FETCH=1` и `OPENCODE_DISABLE_AUTOUPDATE=1`, поэтому список моделей и обновления не тянутся из сети.
 - `OPENCODE_DISABLE_CLAUDE_CODE` не ставится: запреты `/root/CLAUDE.md` (System bans, Secrets, Deletion) уже приходят в промпт `developer` из `sdk-agent/system-prompt.md`, а `.claude` оставлен ради глобальных правил и навыков.
 
