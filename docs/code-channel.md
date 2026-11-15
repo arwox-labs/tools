@@ -8,14 +8,14 @@
 - `bin/code-channel audit <проект> <ТЗ-файл>` — аудит без изменений на активном воркере.
 - `bin/code-channel <go|sdk> <проект> <ТЗ-файл> [--model <m>]` — явный воркер без failover.
 - `bin/code-channel use <go|sdk> "<цитата владельца>"` — мгновенное переключение активного воркера: пишет `state/code-channel/active` и `use.log`, без правки конфига.
-- `bin/code-channel --plan` печатает `<id> <model>` активного воркера, например `go opencode-go/deepseek-v4.1-flash`.
+- `bin/code-channel --plan` печатает `<id> <model>` активного воркера, например `go opencode-go/longcat-2.5-free`.
 - `bin/code-channel --help` — справка, включая пути к конфигу, permit и этой странице.
 
 ## Воркеры
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `go` | включён, активен (owner 26.10: «все последующие запуски — через Go Worker Go») | Go-воркер: OpenCode CLI + provider `opencode-go`, единая модель `opencode-go/deepseek-v4.1-flash` для кода, audit и продолжения сессии; `fallback_model` `opencode-go/deepseek-v4-pro` — один запуск внутри go |
+| `go` | enabled, active (owner 26.10) | OpenCode CLI; free `opencode-go/longcat-2.5-free` for code, audit and session continuation; no automatic paid Go fallback |
 | `sdk` | включён | SDK-воркер: `bin/sdk-agent code` (audit: `sdk-agent read`), модель `claude-haiku-5-5`; бюджет 0.50 USD за прогон (потолок 2.00), общий дневной cap 22.00 USD (`/root/CLAUDE.md`) |
 
 Других воркеров в лестнице нет. Лестница — ровно `go`, `sdk`, обе записи `enabled: true`.
@@ -36,7 +36,7 @@ Permit: `state/code-channel/permit.json`, путь переопределяет�
 
 ## Конфиг
 
-`config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model`/`audit_model` (равны `model`), `fallback_model` (один запуск внутри go при сбое провайдера); порядок массива — порядок лестницы. `config/opencode-channel.json` добавляет агента `developer` (mode `primary`, TDD, правки только в `FILE:` ТЗ) и `audit`; go-код запускается с `--agent developer`, аудит — с `--agent audit`.
+`config/code-channel.json` stores `id`, `enabled`, `model`, `resume_model`/`audit_model` (equal to `model`), optional `allowed_models`, and `fallback_model` (empty for go); array order defines the ladder. The default changes only on owner instruction. Explicit `go --model <provider/model>` accepts the default or an approved `allowed_models` entry: `opencode-go/longcat-2.5-free`, `opencode/longcat-2.5-free`, `bitrixgpt/bitrix/bitrixgpt-5.6-agent`, or `bitrixgpt/bitrix/bitrixgpt-6.0-agent`. The SDK route is unchanged. `config/opencode-channel.json` добавляет агента `developer` (mode `primary`, TDD, правки только в `FILE:` ТЗ) и `audit`; go-код запускается с `--agent developer`, аудит — с `--agent audit`.
 
 Промпты `developer` и `audit` не копируют запреты, а ссылаются на единственный источник `sdk-agent/system-prompt.md`:
 
@@ -72,7 +72,7 @@ OPENCODE_CONFIG=config/opencode-channel.json opencode mcp list
 Go-запуск не тратит время на то, что воркеру не нужно:
 
 - `config/opencode-channel.json` выключает `snapshot`, `lsp` и `autoupdate` (`false`). Snapshots — undo для TUI; воркер коммитит обычным git. LSP и проверка обновлений в неинтерактивном прогоне не нужны.
-- Вызов идёт как `opencode --pure run …` — без внешних плагинов.
+- The invocation uses `opencode --standalone run …` without external plugins.
 - Только для процесса opencode заданы `OPENCODE_DISABLE_MODELS_FETCH=1` и `OPENCODE_DISABLE_AUTOUPDATE=1`, поэтому список моделей и обновления не тянутся из сети.
 - `OPENCODE_DISABLE_CLAUDE_CODE` не ставится: запреты `/root/CLAUDE.md` (System bans, Secrets, Deletion) уже приходят в промпт `developer` из `sdk-agent/system-prompt.md`, а `.claude` оставлен ради глобальных правил и навыков.
 

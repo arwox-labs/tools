@@ -9,3 +9,11 @@ Plan: use the existing selector/configuration; extend a finite alternative list 
 Acceptance: approved override succeeds; unlisted override fails before execution; existing tests pass; real configured call returns its marker; exact merged files match installed runtime. Rollback restores only the saved pre-change versions of affected files.
 
 Status: preparation checkpoint; implementation and acceptance pending.
+
+## Verification checkpoint
+
+Independent report-only review found no scoped correctness defect; five product files, tests and global JSONC baseline diff inspected. Valid Bitrix 5.6/6.0, arbitrary model rejection and malformed allowlists have regression coverage. Directory wildcard broadening is intentional; review alone does not prove all directories. Real OpenCode 2.2.7 calls returned GLOBAL_FREE_READY from /root and BITRIX6_READY through the installed personal provider, both rc0. File editing produced DIRECTORY_WRITE_READY in a disposable task fixture. No paid Go or SDK verification used.
+
+Selected architecture: retain existing code-channel and native global OpenCode config; explicit finite model alternatives, no automatic paid fallback. Kimi is future integration only; its current authentication was not changed. Other host sandbox permissions are outside this patch.
+
+Regression evidence: TMPDIR=<private task scratch> timeout 60s bash bin/code-channel-test completed rc0, PASS 102 checks; existing guard, fallback and permit cases retained. Independent report-only reviewer returned no findings. Product diff check passed.

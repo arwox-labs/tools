@@ -4,7 +4,7 @@ export GIT_CONFIG_NOSYSTEM=1
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/cc-test.XXXXXX")
-nogit=$(mktemp -d /tmp/cc-nogit.XXXXXX)
+nogit=$(mktemp -d "$tmp/cc-nogit.XXXXXX")
 trap 'rm -rf -- "$tmp" "$nogit"' EXIT
 bin=$tmp/bin project=$tmp/project tz=$tmp/tz log=$tmp/args.log runs=$tmp/runs.jsonl tlog=$tmp/timeout.args permit=$tmp/permit.json
 go=$tmp/go.json goaudit=$tmp/goaudit.json goidle=$tmp/goidle.json goalt=$tmp/goalt.json resume=$tmp/resume.json ocfg=$tmp/ocfg.json sdkgo=$tmp/sdkgo.json gosdk=$tmp/gosdk.json
@@ -183,6 +183,19 @@ CC_CONFIG=$go check go_journal_session '[[ $rc == 124 ]] && grep -q '"'"'"sessio
   env OPENCODE_RC=124 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 CC_CONFIG=$goaudit check go_model_override_ok '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/mimo-v2.6-flash
+allowed=$tmp/allowed.json
+jq '.ladder[0].allowed_models = ["bitrixgpt/bitrix/bitrixgpt-5.6-agent", "bitrixgpt/bitrix/bitrixgpt-6.0-agent"]' "$go" >"$allowed"
+for bitrix_model in bitrixgpt-5.6-agent bitrixgpt-6.0-agent; do
+  CC_CONFIG=$allowed check "go_listed_$bitrix_model" '[[ $rc == 0 ]] && grep -Fq -- "-m bitrixgpt/bitrix/$bitrix_model" "$log"' \
+    env SQLITE_RESULT="bitrixgpt|bitrix/$bitrix_model" "$root/bin/code-channel" go "$project" "$tz" --model "bitrixgpt/bitrix/$bitrix_model"
+done
+CC_CONFIG=$allowed check go_unlisted_override_rejected '[[ $rc == 3 && $err == *"модель не в конфиге: arbitrary/model"* && ! -s $log ]]' \
+  "$root/bin/code-channel" go "$project" "$tz" --model arbitrary/model
+for bad_allowed in null '"provider/model"' '[""]' '["provider"]' '["/model"]' '["provider/"]' '["provider/white space"]' '[7]'; do
+  jq --argjson bad "$bad_allowed" '.ladder[0].allowed_models = $bad' "$go" >"$tmp/bad-allowed.json"
+  CC_CONFIG=$tmp/bad-allowed.json check go_malformed_allowed_models_rejected '[[ $rc == 3 && $err == *"не читается"* && ! -s $log ]]' \
+    "$root/bin/code-channel" go "$project" "$tz"
+done
 CC_CONFIG=$go check go_stdin_prompt_file '[[ $rc == 0 ]] && grep -Eq -- "^stdin=.*code-channel-prompt-" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 CC_CONFIG=$ocfg check opencode_config_env '[[ $rc == 0 ]] && grep -Fxq -- "env OPENCODE_CONFIG=$root/config/opencode-channel.json" "$log"' \
@@ -391,11 +404,11 @@ check ladder_two_only '[[ $rc == 0 ]] && jq -e "$ladder_jq" "$root/config/code-c
 mcp_jq='(.mcp // {}) as $m | ((["codebase-memory-mcp","context7","repowise","vibecode"] - ($m | keys)) | length == 0) and ($m | all(.[]; .enabled == false))'
 check go_no_mcp '[[ $rc == 0 ]] && jq -e "$mcp_jq" "$root/config/opencode-channel.json" >/dev/null' \
   jq -e . "$root/config/opencode-channel.json"
-ext_jq='(.permission.external_directory["/tmp/**"] == "allow") and (.permission.external_directory["*"] == "deny")'
+ext_jq='(.permission.external_directory["/tmp/**"] == "allow") and (.permission.external_directory["*"] == "allow")'
 check go_tmp_write_allow '[[ $rc == 0 ]] && jq -e "$ext_jq" "$root/config/opencode-channel.json" >/dev/null' \
   jq -e . "$root/config/opencode-channel.json"
 lean_jq='(.snapshot == false) and (.lsp == false) and (.autoupdate == false)'
-CC_CONFIG=$go check go_lean_start '[[ $rc == 0 ]] && grep -Fq -- "--pure run" "$log" && grep -Fxq -- "env OPENCODE_DISABLE_MODELS_FETCH=1" "$log" && grep -Fxq -- "env OPENCODE_DISABLE_AUTOUPDATE=1" "$log" && ! grep -Fq -- "env OPENCODE_DISABLE_CLAUDE_CODE=1" "$log" && jq -e "$lean_jq" "$root/config/opencode-channel.json" >/dev/null' \
+CC_CONFIG=$go check go_lean_start '[[ $rc == 0 ]] && grep -Fq -- "--standalone run" "$log" && grep -Fxq -- "env OPENCODE_DISABLE_MODELS_FETCH=1" "$log" && grep -Fxq -- "env OPENCODE_DISABLE_AUTOUPDATE=1" "$log" && ! grep -Fq -- "env OPENCODE_DISABLE_CLAUDE_CODE=1" "$log" && jq -e "$lean_jq" "$root/config/opencode-channel.json" >/dev/null' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 bans_cfg=$root/config/opencode-channel.json

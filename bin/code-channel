@@ -19,7 +19,7 @@ strip_nvm_path() {
     printf '%s' "${out[*]}"
 }
 export PATH=$(strip_nvm_path "${PATH:-}")
-jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string") and ((.audit_model? // "") | type == "string") and ((.fallback_model? // "") | type == "string"))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
+jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string") and ((.audit_model? // "") | type == "string") and ((.fallback_model? // "") | type == "string") and ((has("allowed_models") | not) or (.allowed_models | type == "array" and all(.[]; type == "string" and test("^[^[:space:]/]+/[^[:space:]]+$")))))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
 en=$(jq -r '[.ladder[] | select(.enabled)] | length' "$config") || exit 3
 [[ $en -gt 0 ]] || { fail "ladder must have at least one enabled entry, found 0"; exit 28; }
 S=${CODE_CHANNEL_STATE:-/root/workspaces/tools/state/code-channel}
@@ -181,7 +181,7 @@ run_form() (
     start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=; oc_out=; oc_err=; pfile=
     retries=0 primary_model= used_fallback=0
     IFS=$'\034' read -r model resume_model audit_model fallback_model name secret base effort < <(entry_for "$id" | jq -r '[.model,.resume_model // "",.audit_model // "",.fallback_model // "",.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
-    if [[ -n $override && $override != "$model" ]]; then
+    if [[ -n $override && $override != "$model" ]] && ! entry_for "$id" | jq -e --arg model "$override" '(.allowed_models // []) | index($model) != null' >/dev/null; then
         fail "модель не в конфиге: $override"
         exit 3
     fi
@@ -265,7 +265,7 @@ run_form() (
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
             printf '%s' "$oc_prompt" >"$pfile"
-            guarded "$helper_scope" timeout "$run_timeout" env OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1 opencode --pure run "${oc_args[@]}" --agent developer -m "$model" < "$pfile" 2>"$oc_err" | tee "$oc_out"; run=${PIPESTATUS[0]}
+            guarded "$helper_scope" timeout "$run_timeout" env OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1 opencode --standalone run "${oc_args[@]}" --agent developer -m "$model" < "$pfile" 2>"$oc_err" | tee "$oc_out"; run=${PIPESTATUS[0]}
             cat -- "$oc_err" >&2
             [[ $run != 27 ]] || exit 27
             [[ $run == 0 ]] && break
