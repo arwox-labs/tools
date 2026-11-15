@@ -11,6 +11,74 @@ for f in "$SB" "$CATCHUP"; do
   [ -f "$f" ] || { echo "FATAL: нет $f"; exit 1; }
 done
 
+if [ "${1:-}" = --policy-only ]; then
+  exec python3 - "$SB" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+source = Path(sys.argv[1]).read_text()
+retention = next(block for block in source.split("\n\n") if "run_step forget " in block and "forget_rc=$?" in block)
+guard = "exec 9>" + source.split("exec 9>", 1)[1].split("# Снимок cron", 1)[0]
+completion = "date +%s >\"$LAST_OK\"" + source.split('date +%s >"$LAST_OK"', 1)[1].split('if [ "$(date +%u)"', 1)[0]
+
+
+class Policy(unittest.TestCase):
+    def test_retention(self):
+        for hour in range(24):
+            with self.subTest(hour=hour):
+                script = 'set -u; NICE_PREFIX=(); RESTIC=restic; run_hour="$1"; run_step() { printf "%s\\0" "$@"; return "$RC"; }; fail() { exit "$2"; };\n' + retention
+                result = subprocess.run(["bash", "-c", script, "policy", f"{hour:02}"], env={**os.environ, "RC": "0"}, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = ["forget", "restic", "forget", "--tag", "server", "--group-by", "host,tags", "--keep-hourly", "48", "--keep-daily", "14"]
+                if hour == 3:
+                    expected.append("--prune")
+                expected += ["--retry-lock", "30m"]
+                self.assertEqual(result.stdout.decode().rstrip("\0").split("\0"), expected)
+        for rc in (1, 3):
+            result = subprocess.run(["bash", "-c", script, "policy", "03"], env={**os.environ, "RC": str(rc)}, capture_output=True)
+            self.assertEqual(result.returncode, 0 if rc == 3 else rc)
+
+    def run_slot(self, root, epoch, success=True):
+        script = 'set -u; log() { printf "%s\\n" "$*" >&2; }; fail() { exit "$2"; }; date() { printf "%s\\n" "$EPOCH"; };\n' + guard
+        script += 'printf "cloud\\n" >>"$STAGE/calls"\n'
+        script += completion if success else "exit 1\n"
+        return subprocess.run(["bash", "-c", script], env={**os.environ, "STAGE": str(root), "LAST_OK": str(root / "last-ok"), "EPOCH": str(epoch)}, capture_output=True)
+
+    def test_successful_slot(self):
+        with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as directory:
+            root = Path(directory)
+            for slot in range(8):
+                epoch = 1794690000 + slot * 10800
+                self.assertEqual(self.run_slot(root, epoch).returncode, 0)
+                self.assertEqual(self.run_slot(root, epoch + 60).returncode, 0)
+            self.assertEqual((root / "calls").read_text().splitlines(), ["cloud"] * 8)
+
+    def test_incomplete_slot(self):
+        with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as directory:
+            root = Path(directory)
+            self.assertEqual(self.run_slot(root, 1794690000, success=False).returncode, 1)
+            self.assertEqual(self.run_slot(root, 1794690060).returncode, 75)
+            self.assertEqual(self.run_slot(root, 1794700800).returncode, 0)
+            self.assertEqual((root / "calls").read_text().splitlines(), ["cloud"] * 2)
+
+    def test_concurrent_slot(self):
+        import fcntl
+        with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as directory:
+            root = Path(directory)
+            with (root / ".server-backup.lock").open("w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(self.run_slot(root, 1794690000).returncode, 0)
+            self.assertFalse((root / "calls").exists())
+
+
+unittest.main(argv=["policy"], verbosity=2)
+PY
+fi
+
 TMP="$(mktemp -d /tmp/dcfg-sb-selfcheck.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 

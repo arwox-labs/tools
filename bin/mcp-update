@@ -47,10 +47,13 @@ list_one() {
   echo "$name: $pkg $(ver_of "$dir" "$pkg")"
 }
 
+case "${1:---help}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
 command -v pnpm >/dev/null || { echo "FAILED: pnpm not found" >&2; exit 1; }
 
 case "${1:---help}" in
-  -h|--help) usage; exit 0 ;;
   --list)
     for d in "$ROOT"/*-mcp; do
       [ -d "$d" ] && list_one "$(basename "$d" -mcp)"

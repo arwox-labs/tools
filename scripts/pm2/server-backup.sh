@@ -327,6 +327,19 @@ if ! flock -n 9; then
   log "backup already running; duplicate invocation skipped"
   exit 0
 fi
+backup_slot=$(( $(date +%s) / 10800 ))
+slot_file="$STAGE/.server-backup.slot"
+if [ -f "$slot_file" ]; then
+  read -r previous_slot previous_status <"$slot_file" || fail slot-state 1
+  [[ $previous_slot =~ ^[0-9]+$ && $previous_status =~ ^(attempt|ok)$ ]] || fail slot-state 1
+  if [ "$previous_slot" -ge "$backup_slot" ]; then
+    log "backup slot=$previous_slot status=$previous_status; duplicate invocation skipped"
+    [ "$previous_status" = ok ] && exit 0
+    fail duplicate-slot 75
+  fi
+fi
+# Record before external effects: an interrupted attempt must not run twice.
+printf '%s attempt\n' "$backup_slot" >"$slot_file.next" && mv -f -- "$slot_file.next" "$slot_file" || fail slot-state 1
 
 # Снимок cron и свежий docker-бэкап.
 crontab -l >"$STAGE/crontab-root.txt" 2>>"$LOG" || :
@@ -460,7 +473,9 @@ if [ "$mirror_s3" -lt "$mirror_local" ]; then
   fail mirror-check "$((mirror_local - mirror_s3))"
 fi
 
-run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-hourly 48 --keep-daily 14 --prune --retry-lock 30m
+forget_args=()
+[ "$run_hour" = 03 ] && forget_args=(--prune)
+run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-hourly 48 --keep-daily 14 "${forget_args[@]}" --retry-lock 30m
 forget_rc=$?
 case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
@@ -515,7 +530,8 @@ fi
 log "docker-retention rc=$docker_retention_rc"
 [ "$docker_retention_rc" -eq 0 ] || fail docker-retention "$docker_retention_rc"
 [ "$images_rc" -eq 0 ] || fail docker-images "$images_rc"
-date +%s >"$LAST_OK"
+date +%s >"$LAST_OK" || fail last-ok 1
+printf '%s ok\n' "$backup_slot" >"$slot_file.next" && mv -f -- "$slot_file.next" "$slot_file" || fail slot-state 1
 if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   send_telegram "✅ server-backup: неделя ок, snapshot latest, size ${stats_size:-unknown}, drill ok"
 fi
