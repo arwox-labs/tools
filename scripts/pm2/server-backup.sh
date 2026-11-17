@@ -475,7 +475,7 @@ fi
 
 forget_args=()
 [ "$run_hour" = 03 ] && forget_args=(--prune)
-run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-hourly 48 --keep-daily 14 "${forget_args[@]}" --retry-lock 30m
+run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-within 24h --keep-daily 3 --keep-weekly 2 "${forget_args[@]}" --retry-lock 30m
 forget_rc=$?
 case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 

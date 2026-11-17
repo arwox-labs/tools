@@ -33,7 +33,7 @@ class Policy(unittest.TestCase):
                 script = 'set -u; NICE_PREFIX=(); RESTIC=restic; run_hour="$1"; run_step() { printf "%s\\0" "$@"; return "$RC"; }; fail() { exit "$2"; };\n' + retention
                 result = subprocess.run(["bash", "-c", script, "policy", f"{hour:02}"], env={**os.environ, "RC": "0"}, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                expected = ["forget", "restic", "forget", "--tag", "server", "--group-by", "host,tags", "--keep-hourly", "48", "--keep-daily", "14"]
+                expected = ["forget", "restic", "forget", "--tag", "server", "--group-by", "host,tags", "--keep-within", "24h", "--keep-daily", "3", "--keep-weekly", "2"]
                 if hour == 3:
                     expected.append("--prune")
                 expected += ["--retry-lock", "30m"]
