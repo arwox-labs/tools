@@ -3,6 +3,22 @@
   "snapshot": false,
   "lsp": false,
   "autoupdate": false,
+  "providers": {
+    "teamorouter": {
+      "name": "TeamoRouter",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://api.teamorouter.com/v1",
+        "apiKey": "{env:TEAMOROUTER_API_KEY}"
+      },
+      "models": {
+        "glm-5.3-flash-free": {},
+        "deepseek-flash-free": {},
+        "glm-5.3-flash": {},
+        "deepseek-flash": {}
+      }
+    }
+  },
   "provider": {
     "opencode-go": {
       "options": {
