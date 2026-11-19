@@ -244,13 +244,23 @@ run_form() (
     [[ $model == ?*/?* ]] || exit 15
     provider=${model%%/*}
     mid=${model#*/}
+    audit_flags=()
+    if [[ $provider == teamorouter ]]; then
+        if [[ -z ${TEAMOROUTER_API_KEY:-} && -r /root/workspaces/secrets/services/teamorouter.env ]]; then
+            set -a
+            source /root/workspaces/secrets/services/teamorouter.env || exit 3
+            set +a
+        fi
+        [[ -n ${TEAMOROUTER_API_KEY:-} ]] || { fail 'TEAMOROUTER_API_KEY unavailable'; exit 3; }
+        audit_flags=(--standalone)
+    fi
     run_start_ms=$(date +%s%3N)
     db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
     oc_args=() oc_prompt=
     pfile=$(mktemp "${TMPDIR:-/tmp}/code-channel-prompt-XXXXXX") || exit 3
     if [[ $mode == audit ]]; then
         printf '%s' "$prompt" >"$pfile"
-        guarded "$helper_scope" timeout "$run_timeout" opencode run --agent audit --title "$id_run" -m "$model" < "$pfile"; run=$?
+        guarded "$helper_scope" timeout "$run_timeout" opencode "${audit_flags[@]}" run --agent audit --title "$id_run" -m "$model" < "$pfile"; run=$?
     else
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
@@ -414,6 +424,10 @@ auto_run() {
     before=$(form_snap)
     run_capture "$start" "$dir/$start.err"; r=$?
     [[ $r != 0 ]] || auto_success "$dir"
+    if [[ $start == go ]] && entry_for go | jq -e '(.model | split("/")[0]) == "teamorouter"' >/dev/null; then
+        rm -rf -- "$dir"
+        exit "$r"
+    fi
     if ! provider_failure "$r" "$dir/$start.err.stderr"; then
         printf 'code-channel: no evidence %s rc=%s — без переключения\n' "$start" "$r" >&2
         rm -rf -- "$dir"

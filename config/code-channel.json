@@ -6,7 +6,7 @@
   "run_timeout": 1800,
   "switch": {"channel": "go", "owner_word": "все последующие запуски должны происходить через Go Worker Go (владелец 26.10)", "date": "2026-10-26"},
   "ladder": [
-    {"id": "go", "enabled": true, "model": "opencode-go/longcat-2.5-free", "resume_model": "opencode-go/longcat-2.5-free", "audit_model": "opencode-go/longcat-2.5-free", "fallback_model": "", "allowed_models": ["opencode-go/longcat-2.5-free", "opencode/longcat-2.5-free", "bitrixgpt/bitrix/bitrixgpt-5.6-agent", "bitrixgpt/bitrix/bitrixgpt-6.0-agent"]},
+    {"id": "go", "enabled": true, "model": "teamorouter/glm-5.3-flash", "resume_model": "teamorouter/glm-5.3-flash", "audit_model": "teamorouter/glm-5.3-flash", "fallback_model": "", "allowed_models": ["opencode-go/longcat-2.5-free", "opencode/longcat-2.5-free", "bitrixgpt/bitrix/bitrixgpt-5.6-agent", "bitrixgpt/bitrix/bitrixgpt-6.0-agent", "teamorouter/glm-5.3-flash-free", "teamorouter/deepseek-flash-free", "teamorouter/glm-5.3-flash", "teamorouter/deepseek-flash"]},
     {"id": "sdk", "enabled": true, "model": "claude-haiku-5-5", "owner_word": "25.10 владелец: «Мы переключаемся на SDK-агента»"}
   ]
 }
