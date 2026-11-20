@@ -28,12 +28,6 @@
         "teamorouter/glm-5.3-flash",
         "teamorouter/glm-5.3-flash-free"
       ]
-    },
-    {
-      "id": "sdk",
-      "enabled": true,
-      "model": "claude-haiku-5-5",
-      "owner_word": "25.10 владелец: «Мы переключаемся на SDK-агента»"
     }
   ]
 }

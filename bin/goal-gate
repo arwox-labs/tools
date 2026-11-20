@@ -10,28 +10,7 @@ ev=$(jq -er '.hook_event_name | select(type == "string")' <<<"$json") || exit 0
 if [ "$ev" = "PreToolUse" ]; then
   tool=$(jq -er '.tool_name // "" | select(type == "string")' <<<"$json") || exit 0
   [ "$tool" = "Agent" ] || exit 0
-  permit=${GOAL_GATE_PERMIT:-/root/workspaces/tools/state/code-channel/permit.json}
-  model=$(jq -r '(.tool_input // {}) | if type == "object" then (.model // "") else "" end | if type == "string" then . else "" end' <<<"$json") || model=''
-  now=$(date +%s)
-  if [ "$model" = "haiku" ] && [ -f "$permit" ] && [ -r "$permit" ]; then
-    pwt=$(jq -r '(.worktree // "") | if type == "string" then . else "" end' "$permit" 2>/dev/null) || pwt=''
-    ptz=$(jq -r '(.tz // "") | if type == "string" then . else "" end' "$permit" 2>/dev/null) || ptz=''
-    if [ -n "$pwt" ] && [ "${pwt#/}" != "$pwt" ] && [ -e "$pwt" ] &&
-      [ -n "$ptz" ] && [ "${ptz#/}" != "$ptz" ] && [ -e "$ptz" ] &&
-      jq -e --argjson now "$now" '
-        (.rc == 32)
-        and ((.go_rc | type) == "number" and .go_rc != 0)
-        and ((.sdk_rc | type) == "number" and .sdk_rc != 0)
-        and ((.stderr | type) == "array" and (.stderr | length) > 0)
-        and ((.canary | type) == "string" and (.canary | contains("channel-canary")))
-        and ((.ts | type) == "number")
-        and (($now - .ts) <= 1800)
-        and (.ts <= ($now + 60))
-      ' "$permit" >/dev/null 2>&1; then
-      exit 0
-    fi
-  fi
-  jq -nc --arg p "$permit" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("Claude Code helpers are not workers (owner 26.10): Agent is allowed only with tool_input.model=haiku and a fresh permit " + $p + " (rc=32, non-zero go_rc and sdk_rc, non-empty stderr, canary, ts <= 30 min); otherwise use /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>")}}'
+  jq -nc '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Agent tool is disabled; use /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>"}}'
   exit 0
 fi
 [ "$ev" = "Stop" ] || exit 0

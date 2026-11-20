@@ -609,7 +609,7 @@ else
 fi
 
 tx53=$d/tx53.jsonl
-{ mk_user; for _ in $(seq 8); do mk_read; done; mk_bash2 'code-channel audit a a/tz.md' 'sdk-agent audit b b/tz.md'; } >"$tx53"
+{ mk_user; for _ in $(seq 8); do mk_read; done; mk_bash2 'code-channel audit a a/tz.md' 'code-channel audit b b/tz.md'; } >"$tx53"
 out=$(jq -cn --arg tp "$tx53" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
 ctx=$(ctx_of "$out")
 if [[ $rc == 0 && $ctx != *"of 8"* ]]; then
@@ -702,7 +702,7 @@ else
 fi
 
 tx62=$d/tx62.jsonl
-{ mk_user; mk_bash2 'code-channel audit a a/tz.md' 'sdk-agent audit b b/tz.md'; } >"$tx62"
+{ mk_user; mk_bash2 'code-channel audit a a/tz.md' 'code-channel audit b b/tz.md'; } >"$tx62"
 out=$(jq -cn --arg tp "$tx62" '{hook_event_name:"PostToolUse",transcript_path:$tp,tool_name:"Bash",tool_input:{command:"code-channel audit a a/tz.md"}}' | run_hook); rc=$?
 ctx=$(ctx_of "$out")
 if [[ $rc == 0 && $ctx != *"1 helper stream"* ]]; then
@@ -1012,7 +1012,7 @@ hard_case 171 lead_allow_gh_pr_list allow 'gh pr list' false /tmp
 hard_case 172 lead_allow_gh_pr_diff allow 'gh pr diff 1' false /tmp
 hard_case 173 lead_allow_channel_canary allow 'channel-canary' false /tmp
 hard_case 174 lead_allow_where allow 'where code-channel' false /tmp
-hard_case 175 lead_allow_sdk_agent_background allow 'sdk-agent audit /x /y' true /tmp
+hard_case 175 lead_allow_code_channel_background allow 'code-channel audit /x /y' true /tmp
 hard_case 176 lead_allow_cut allow 'cut -d: -f1 /tmp/f' false /tmp
 hard_case 177 lead_allow_sort allow 'sort /tmp/f' false /tmp
 hard_case 178 lead_allow_uniq allow 'uniq /tmp/f' false /tmp
@@ -1109,7 +1109,6 @@ hard_case 244 lead_git_C_reset_denied deny 'git -C /x reset --hard' false /tmp
 hard_case 245 lead_allow_channel_help_foreground allow 'code-channel --help' false /tmp
 hard_case 246 lead_allow_channel_h_foreground allow 'code-channel -h' false /tmp
 hard_case 247 lead_allow_channel_plan_foreground allow 'code-channel --plan' false /tmp
-hard_case 248 lead_allow_sdk_agent_help_foreground allow 'sdk-agent --help' false /tmp
 hard_case 249 lead_channel_auto_foreground_denied deny 'code-channel auto /x /y/tz.md' false /tmp
 hard_case 250 lead_channel_audit_foreground_denied deny 'code-channel audit /x /y/tz.md' false /tmp
 

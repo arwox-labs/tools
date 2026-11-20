@@ -42,14 +42,14 @@
     "developer": {
       "description": "Senior developer for code-channel Go runs: minimal exact change inside the TZ FILE lines.",
       "mode": "primary",
-      "prompt": "{file:../sdk-agent/system-prompt.md}",
+      "prompt": "{file:./code-channel-system-prompt.md}",
       "permission": {
         "edit": "allow",
         "bash": "allow"
       }
     },
     "audit": {
-      "prompt": "{file:../sdk-agent/system-prompt.md}",
+      "prompt": "{file:./code-channel-system-prompt.md}",
       "permission": {
         "bash": {
           "bd --readonly *": "allow",
