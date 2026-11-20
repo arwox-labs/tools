@@ -20,6 +20,21 @@ mkdir -p "$(dirname "$DZ_ZONES_TSV")"
 
 ts=$(date +%Y-%m-%dT%H:%M:%S)
 
+wt_guard() { # wt name -> 0, если ветка <зона>/<имя> и worktree связан с общим репозиторием
+  local wt=$1 name=$2 branch zbase gitdir common top
+  zbase=$(basename "$(dirname "${wt%/}")")
+  branch=$(git -C "$wt" symbolic-ref --short -q HEAD 2>/dev/null) || return 1
+  case $zbase in
+    codex|claude) [ "$branch" = "$zbase/$name" ] || return 1 ;;
+    *) [ "$branch" = "codex/$name" ] || [ "$branch" = "claude/$name" ] || return 1 ;;
+  esac
+  common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  gitdir=$(git -C "$wt" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
+  case $gitdir in "$common"/worktrees/?*) [ -d "$gitdir" ] || return 1 ;; *) return 1 ;; esac
+  top=$(git -C "$wt" rev-parse --path-format=absolute --show-toplevel 2>/dev/null) || return 1
+  git --git-dir="$common" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $top"
+}
+
 classify() { # wt -> задаёт глобальные STATE, CLASS
   local wt=$1 name id status ltmp procbusy lrc
   STATE=kept-not-merged
@@ -42,12 +57,19 @@ classify() { # wt -> задаёт глобальные STATE, CLASS
     STATE=kept-dirty
     return
   fi
-  # 3. id атома из имени каталога и статус закрыт
+  # 3. id атома из имени каталога (или codex/<атом>-<описание>) и статус закрыт
   name=$(basename "$wt")
   id=$(printf '%s' "$name" | sed -nE 's/^(dcfg-[a-z0-9.]+)$/\1/p')
   if [ -z "$id" ]; then
-    STATE=kept-no-atom
-    return
+    id=$(printf '%s' "$name" | sed -nE 's/^(dcfg-[a-z0-9]+(\.[a-z0-9]+)*)-(.+)$/\1/p')
+    if [ -z "$id" ]; then
+      STATE=kept-no-atom
+      return
+    fi
+    if ! wt_guard "$wt" "$name"; then
+      STATE=kept-wt-mismatch
+      return
+    fi
   fi
   if ! status=$("$DZ_BD" show "$id" --json 2>/dev/null) \
      || ! jq -e --arg id "$id" 'any(.[]; .id == $id and .status == "closed")' <<<"$status" >/dev/null 2>&1; then
