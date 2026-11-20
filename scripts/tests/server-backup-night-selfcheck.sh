@@ -35,7 +35,7 @@ class Policy(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 expected = ["forget", "restic", "forget", "--tag", "server", "--group-by", "host,tags", "--keep-within", "24h", "--keep-daily", "3", "--keep-weekly", "2"]
                 if hour == 3:
-                    expected.append("--prune")
+                    expected.extend(["--prune", "--max-repack-size", "512M"])
                 expected += ["--retry-lock", "30m"]
                 self.assertEqual(result.stdout.decode().rstrip("\0").split("\0"), expected)
         for rc in (1, 3):
