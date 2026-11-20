@@ -4,7 +4,7 @@ set -eu
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 state=$(mktemp -d "${TMPDIR:-/tmp}/code-channel-use.XXXXXX")
 trap 'rm -rf -- "$state"' EXIT
-run() { env -u CODE_CHANNEL_ACTIVE CODE_CHANNEL_CONFIG="$root/config/code-channel.json" CODE_CHANNEL_STATE="$state" "$root/bin/code-channel" "$@"; }
+run() { env -u CODE_CHANNEL_ACTIVE CODE_CHANNEL_CONFIG="$root/config/code-channel.json" CODE_CHANNEL_STATE="$state" "$root/bin/code-agent" "$@"; }
 
 [[ $(run use go 'test quote') == active=go ]]
 plan=$(run --plan)

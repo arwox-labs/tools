@@ -24,7 +24,7 @@ chmod 755 "$d/stub"
 run_case() { # seq...
   printf '%s\n' "$@" > "$d/seq"
   printf '0\n' > "$d/count"
-  out=$(STUB_DIR="$d" CODE_CHANNEL="$d/stub" "$dir/channel-canary" /tmp/proj 2>&1); rc=$?
+  out=$(STUB_DIR="$d" CODE_AGENT="$d/stub" "$dir/channel-canary" /tmp/proj 2>&1); rc=$?
 }
 
 # 1: stub ok -> rc 0, called once

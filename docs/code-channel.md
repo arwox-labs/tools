@@ -1,17 +1,17 @@
-# Канал кода
+# OpenCode wrapper code-agent
 
-`bin/code-agent` — основная команда записи кода для Claude и Codex. `bin/code-channel` остаётся совместимым именем той же программы. Агент передаёт реализацию этой обёртке. Прямые `opencode run` и `codex exec` как альтернативный путь запрещены.
+`/root/workspaces/tools/bin/code-agent` — единственная установленная OpenCode-обёртка для live-записи кода, тестов, аудита и доставки. Вызывай её по абсолютному пути из другого проекта. Старый путь `/root/workspaces/tools/bin/code-channel` выведен из эксплуатации и обязан завершаться отказом до запуска исполнителя. Прямые `opencode run` и `codex exec` как альтернативный путь запрещены. Для передачи задачи субагенту Codex используй штатную делегацию Codex.
 
 ## Вызов
 
-- `bin/code-agent auto <проект> <ТЗ-файл>` — активный воркер.
-- `bin/code-agent audit <проект> <ТЗ-файл>` — аудит без изменений на активном воркере.
-- `bin/code-agent go <проект> <ТЗ-файл> [--model <m>]` — явный воркер без failover.
-- `bin/code-agent use go "<цитата владельца>"` — выбор активного воркера: пишет `state/code-channel/active` и `use.log`, без правки конфига.
-- `bin/code-agent --plan` печатает `<id> <model>` активного воркера для задач разработки.
-- `bin/code-agent --help` — справка, включая путь к конфигу и этой странице.
+- `/root/workspaces/tools/bin/code-agent auto <проект> <ТЗ-файл>` — активный воркер.
+- `/root/workspaces/tools/bin/code-agent audit <проект> <ТЗ-файл>` — аудит без изменений на активном воркере.
+- `/root/workspaces/tools/bin/code-agent go <проект> <ТЗ-файл> [--model <m>]` — явный воркер без failover.
+- `/root/workspaces/tools/bin/code-agent use go "<цитата владельца>"` — выбор активного воркера: пишет `state/code-channel/active` и `use.log`, без правки конфига.
+- `/root/workspaces/tools/bin/code-agent --plan` печатает `<id> <model>` активного воркера для задач разработки.
+- `/root/workspaces/tools/bin/code-agent --help` — справка, включая путь к конфигу и этой странице.
 
-При каждом восстановлении архивных файлов сохраняй архив неизменным и до продолжения разработки переноси активные вызовы в восстановленной рабочей копии на `/root/workspaces/tools/bin/code-agent`. Путь `bin/code-agent` внутри восстановленной копии может указывать на старую версию, поэтому проверь установленную программу командой `/root/workspaces/tools/bin/code-agent --plan`. Старый `code-channel` запускай только если он нужен для самого восстановления. Не копируй устаревший wrapper поверх установленной программы.
+При каждом восстановлении архивных файлов сохраняй архив неизменным. Восстанови нужные исходники в рабочую копию, обнови в ней все активные вызовы на `/root/workspaces/tools/bin/code-agent` и проверь установленную команду через `--plan` до продолжения разработки. Не запускай обёртку из архива, включая старые `code-channel` и `code-agent`.
 
 ## Воркеры
 
@@ -25,11 +25,11 @@
 
 ## Parallel runs
 
-Замок — на каталог проекта: `bin/code-channel` делает `cd -- "$project"` и берёт `flock` на хеш `$PWD`, поэтому N параллельных прогонов требуют N разных каталогов проекта (worktree). Второй запуск в том же каталоге выходит с rc 25 «worktree занят». Read-only аудиты одного репозитория тоже идут каждый в своём worktree. Все N вызовов — одним сообщением, в фоне (`/root/CLAUDE.md`, PARALLEL HELPERS).
+Замок — на каталог проекта: `/root/workspaces/tools/bin/code-agent` делает `cd -- "$project"` и берёт `flock` на хеш `$PWD`, поэтому N параллельных прогонов требуют N разных каталогов проекта (worktree). Второй запуск в том же каталоге выходит с rc 25 «worktree занят». Read-only аудиты одного репозитория тоже идут каждый в своём worktree. Все N вызовов — одним сообщением, в фоне (`/root/CLAUDE.md`, PARALLEL HELPERS).
 
 ## Конфиг
 
-`config/code-channel.json` stores `id`, `enabled`, `model`, optional `resume_model`/`audit_model`, optional `allowed_models`, and `fallback_model`; array order defines the ladder. Use `code-agent --plan` for the configured development model and `audit_model` for audit. The default changes only on owner instruction. Explicit `go --model <provider/model>` accepts the configured default or a configured `allowed_models` entry. `config/opencode-channel.json` adds `developer` (mode `primary`, TDD, edits only `FILE:` task lines) and `audit`; code runs with `--agent developer`, audits with `--agent audit`.
+`config/code-channel.json` stores `id`, `enabled`, `model`, optional `resume_model`/`audit_model`, optional `allowed_models`, and `fallback_model`; array order defines the ladder. Use `/root/workspaces/tools/bin/code-agent --plan` for the configured development model and `audit_model` for audit. The default changes only on owner instruction. Explicit `go --model <provider/model>` accepts the configured default or a configured `allowed_models` entry. `config/opencode-channel.json` adds `developer` (mode `primary`, TDD, edits only `FILE:` task lines) and `audit`; code runs with `--agent developer`, audits with `--agent audit`.
 
 Prompts `developer` and `audit` use `config/code-channel-system-prompt.md`:
 

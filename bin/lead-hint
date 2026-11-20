@@ -220,7 +220,12 @@ lead_allowlist() {
       return 0
     fi
 
-    if [[ $base == code-agent || $base == code-channel ]]; then
+    if [[ $base == code-channel ]]; then
+      printf '%s' 'lead allowlist: code-channel is retired; use /root/workspaces/tools/bin/code-agent'
+      return 0
+    fi
+
+    if [[ $base == code-agent ]]; then
       if [[ $bg != true ]]; then
         fgarg=${tok[idx+1]:-}
         if [[ $fgarg == --help || $fgarg == -h || $fgarg == --plan || $fgarg == use ]]; then
