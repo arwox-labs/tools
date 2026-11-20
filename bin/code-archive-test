@@ -937,5 +937,222 @@ else
   f 53
 fi
 
+# Fixtures 54-62 need real objects in the GitLab repo: update-ref refuses to
+# write an object the repo lacks, so each fixture ref is pushed there instead.
+# A gh stub keeps owner discovery offline, so no fixture touches GitHub.
+mkdir -p "$T/stuboffline"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$T/stuboffline/gh"
+chmod +x "$T/stuboffline/gh"
+offline=(PATH="$T/stuboffline:$PATH")
+seed_ref(){ git --git-dir="$2" push -q "$1" "$3:$4" 2>/dev/null; }
+
+# Check 54: completeness is ref name + OID — a sibling ref holding the same
+# object does not stand in for a ref the destination does not have.
+mkgh "sibling54"
+git -C "$T/seed" push -q "$T/github/sibling54.git" main
+oid54=$(git --git-dir="$T/github/sibling54.git" rev-parse main)
+git init -q --bare "$T/gitlab/sibling54.git"
+seed_ref "$T/gitlab/sibling54.git" "$T/github/sibling54.git" "$oid54" refs/heads/server/main
+sib54=$(git --git-dir="$T/gitlab/sibling54.git" rev-parse refs/heads/server/main 2>/dev/null) || sib54=""
+git --git-dir="$T/gitlab/sibling54.git" config core.hooksPath "$T/gitlab/sibling54.git/hooks"
+printf '#!/usr/bin/env bash\ngit --git-dir=%q update-ref -d refs/heads/main\n' "$T/gitlab/sibling54.git" > "$T/gitlab/sibling54.git/hooks/post-receive"
+chmod +x "$T/gitlab/sibling54.git/hooks/post-receive"
+out54=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" sibling54 2>&1); rc54=$?
+if [[ $rc54 == 1 ]] && [[ "$sib54" == "$oid54" ]] \
+   && grep -qF 'sibling54 err:incomplete layer=gitlab 1 missing' <<<"$out54"; then
+  p 54
+else
+  f 54
+fi
+
+# Check 55: an unrelated rewritten archive name holding the same object does not
+# suppress the rewritten ref of the rejected source ref.
+mkgh "rewrite55"
+git init -q "$T/rw55"
+git -C "$T/rw55" config user.email t@t
+git -C "$T/rw55" config user.name t
+git -C "$T/rw55" checkout -q -b main
+fixture_git -C "$T/rw55" commit -q --allow-empty -m one
+git -C "$T/rw55" push -q "$T/github/rewrite55.git" main
+old55=$(git --git-dir="$T/github/rewrite55.git" rev-parse main)
+git init -q --bare "$T/gitlab/rewrite55.git"
+seed_ref "$T/gitlab/rewrite55.git" "$T/rw55/.git" "$old55" refs/heads/main
+fixture_git -C "$T/rw55" commit -q --amend --allow-empty -m two
+git -C "$T/rw55" push -qf "$T/github/rewrite55.git" main
+new55=$(git --git-dir="$T/github/rewrite55.git" rev-parse main)
+seed_ref "$T/gitlab/rewrite55.git" "$T/rw55/.git" "$new55" refs/heads/rewritten/19990101-000000/other
+out55=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" rewrite55 2>&1); rc55=$?
+rw55=$(git --git-dir="$T/gitlab/rewrite55.git" for-each-ref 'refs/heads/rewritten/*/main' --format='%(objectname)')
+other55=$(git --git-dir="$T/gitlab/rewrite55.git" rev-parse refs/heads/rewritten/19990101-000000/other 2>/dev/null) || other55=""
+if [[ $rc55 == 0 ]] && [[ "$rw55" == "$new55" ]] && [[ "$other55" == "$new55" ]] \
+   && grep -qF 'ok:gitlab-rewritten refs/heads/main' <<<"$out55"; then
+  p 55
+else
+  f 55
+fi
+
+# Check 56: a valid qualified rewritten ref (same kind, dated segment, full
+# leaf, same OID) already holds the rejected tip — no second rewritten ref and
+# no false err:incomplete.
+mkgh "qualified56"
+git init -q "$T/rw56"
+git -C "$T/rw56" config user.email t@t
+git -C "$T/rw56" config user.name t
+git -C "$T/rw56" checkout -q -b main
+fixture_git -C "$T/rw56" commit -q --allow-empty -m one
+git -C "$T/rw56" push -q "$T/github/qualified56.git" main
+old56=$(git --git-dir="$T/github/qualified56.git" rev-parse main)
+git init -q --bare "$T/gitlab/qualified56.git"
+seed_ref "$T/gitlab/qualified56.git" "$T/rw56/.git" "$old56" refs/heads/main
+fixture_git -C "$T/rw56" commit -q --amend --allow-empty -m two
+git -C "$T/rw56" push -qf "$T/github/qualified56.git" main
+new56=$(git --git-dir="$T/github/qualified56.git" rev-parse main)
+seed_ref "$T/gitlab/qualified56.git" "$T/rw56/.git" "$new56" refs/heads/rewritten/20260101-000000/main
+out56=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" qualified56 2>&1); rc56=$?
+rw56=$(git --git-dir="$T/gitlab/qualified56.git" for-each-ref refs/heads/rewritten/ --format='%(refname)' | wc -l)
+rw56_obj=$(git --git-dir="$T/gitlab/qualified56.git" for-each-ref refs/heads/rewritten/ --format='%(objectname)')
+if [[ $rc56 == 0 ]] && [[ "$rw56" == 1 ]] && [[ "$rw56_obj" == "$new56" ]] \
+   && grep -qF 'ok:gitlab-rewritten refs/heads/main' <<<"$out56"; then
+  p 56
+else
+  f 56
+fi
+
+# Check 57: the .github source is archived under the mapped GitLab name
+# dot-github; the local copy, state and journal keep the source name.
+mkgh ".github"
+git -C "$T/seed" push -q "$T/github/.github.git" main
+out57=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" .github 2>&1); rc57=$?
+gh57=$(git --git-dir="$T/github/.github.git" rev-parse main)
+gl57=$(git --git-dir="$T/gitlab/dot-github.git" rev-parse refs/heads/main 2>/dev/null) || gl57=""
+if [[ $rc57 == 0 ]] && grep -qF '.github ok' <<<"$out57" \
+   && [[ -d "$T/repos/.github.git" ]] \
+   && [[ "$gl57" == "$gh57" ]] \
+   && [[ ! -e "$T/gitlab/.github.git" ]]; then
+  p 57
+else
+  f 57
+fi
+
+# Check 58: a real source carrying the reserved destination name would share the
+# dot-github project with .github, so it fails closed: no local copy, no push,
+# and the dot-github project keeps the .github content.
+mkgh "dot-github"
+git init -q "$T/l58"
+git -C "$T/l58" config user.email t@t
+git -C "$T/l58" config user.name t
+git -C "$T/l58" checkout -q -b main
+fixture_git -C "$T/l58" commit -q --allow-empty -m legacy
+git -C "$T/l58" push -q "$T/github/dot-github.git" main
+legacy58=$(git --git-dir="$T/github/dot-github.git" rev-parse main)
+out58=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" dot-github 2>&1); rc58=$?
+gl58=$(git --git-dir="$T/gitlab/dot-github.git" rev-parse refs/heads/main 2>/dev/null) || gl58=""
+if [[ $rc58 == 1 ]] && grep -qF 'dot-github err:collision' <<<"$out58" \
+   && [[ ! -e "$T/repos/dot-github.git" ]] \
+   && [[ "$gl58" == "$gh57" ]] && [[ "$gl58" != "$legacy58" ]]; then
+  p 58
+else
+  f 58
+fi
+
+# Check 59: a rewritten segment that is not exactly YYYYMMDD-HHMMSS is not the
+# documented namespace, so the source ref stays missing.
+mkgh "dateval59"
+git -C "$T/seed" push -q "$T/github/dateval59.git" main
+oid59=$(git --git-dir="$T/github/dateval59.git" rev-parse main)
+git init -q --bare "$T/gitlab/dateval59.git"
+seed_ref "$T/gitlab/dateval59.git" "$T/github/dateval59.git" "$oid59" refs/heads/rewritten/20260101-0000/main
+pre59=$(git --git-dir="$T/gitlab/dateval59.git" rev-parse refs/heads/rewritten/20260101-0000/main 2>/dev/null) || pre59=""
+git --git-dir="$T/gitlab/dateval59.git" config core.hooksPath "$T/gitlab/dateval59.git/hooks"
+printf '#!/usr/bin/env bash\ngit --git-dir=%q update-ref -d refs/heads/main\n' "$T/gitlab/dateval59.git" > "$T/gitlab/dateval59.git/hooks/post-receive"
+chmod +x "$T/gitlab/dateval59.git/hooks/post-receive"
+out59=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" dateval59 2>&1); rc59=$?
+if [[ $rc59 == 1 ]] && [[ "$pre59" == "$oid59" ]] \
+   && grep -qF 'dateval59 err:incomplete layer=gitlab 1 missing' <<<"$out59"; then
+  p 59
+else
+  f 59
+fi
+
+# Check 60: a nested branch server/main is satisfied by the dated rewritten ref
+# that keeps the full leaf, so no second rewritten ref is written.
+mkgh "nested60"
+git init -q "$T/n60"
+git -C "$T/n60" config user.email t@t
+git -C "$T/n60" config user.name t
+git -C "$T/n60" checkout -q -b server/main
+fixture_git -C "$T/n60" commit -q --allow-empty -m one
+git -C "$T/n60" push -q "$T/github/nested60.git" server/main
+old60=$(git --git-dir="$T/github/nested60.git" rev-parse server/main)
+git init -q --bare "$T/gitlab/nested60.git"
+seed_ref "$T/gitlab/nested60.git" "$T/github/nested60.git" "$old60" refs/heads/server/main
+fixture_git -C "$T/n60" commit -q --amend --allow-empty -m two
+git -C "$T/n60" push -qf "$T/github/nested60.git" server/main
+new60=$(git --git-dir="$T/github/nested60.git" rev-parse server/main)
+seed_ref "$T/gitlab/nested60.git" "$T/n60/.git" "$new60" refs/heads/rewritten/20260101-000000/server/main
+out60=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" nested60 2>&1); rc60=$?
+cnt60=$(git --git-dir="$T/gitlab/nested60.git" for-each-ref refs/heads/rewritten/ --format='%(refname)' | wc -l)
+obj60=$(git --git-dir="$T/gitlab/nested60.git" for-each-ref 'refs/heads/rewritten/*/server/main' --format='%(objectname)')
+if [[ $rc60 == 0 ]] && [[ "$cnt60" == 1 ]] && [[ "$obj60" == "$new60" ]] \
+   && grep -qF 'ok:gitlab-rewritten refs/heads/server/main' <<<"$out60"; then
+  p 60
+else
+  f 60
+fi
+
+# Check 61: a rewritten ref that drops the nested part of the leaf does not stand
+# in for server/main -> err:incomplete.
+mkgh "nested61"
+git init -q "$T/n61"
+git -C "$T/n61" config user.email t@t
+git -C "$T/n61" config user.name t
+git -C "$T/n61" checkout -q -b server/main
+fixture_git -C "$T/n61" commit -q --allow-empty -m one
+git -C "$T/n61" push -q "$T/github/nested61.git" server/main
+oid61=$(git --git-dir="$T/github/nested61.git" rev-parse server/main)
+git init -q --bare "$T/gitlab/nested61.git"
+seed_ref "$T/gitlab/nested61.git" "$T/github/nested61.git" "$oid61" refs/heads/rewritten/20260101-000000/main
+pre61=$(git --git-dir="$T/gitlab/nested61.git" rev-parse refs/heads/rewritten/20260101-000000/main 2>/dev/null) || pre61=""
+git --git-dir="$T/gitlab/nested61.git" config core.hooksPath "$T/gitlab/nested61.git/hooks"
+printf '#!/usr/bin/env bash\ngit --git-dir=%q update-ref -d refs/heads/server/main\n' "$T/gitlab/nested61.git" > "$T/gitlab/nested61.git/hooks/post-receive"
+chmod +x "$T/gitlab/nested61.git/hooks/post-receive"
+out61=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" nested61 2>&1); rc61=$?
+if [[ $rc61 == 1 ]] && [[ "$pre61" == "$oid61" ]] \
+   && grep -qF 'nested61 err:incomplete layer=gitlab 1 missing' <<<"$out61"; then
+  p 61
+else
+  f 61
+fi
+
+# Check 62: a nested tag rel/1.0 is satisfied by the dated rewritten ref that
+# keeps the full leaf; the rejected tag tip stays untouched and no second
+# rewritten ref is written.
+mkgh "nested62"
+git init -q "$T/n62"
+git -C "$T/n62" config user.email t@t
+git -C "$T/n62" config user.name t
+git -C "$T/n62" checkout -q -b main
+fixture_git -C "$T/n62" commit -q --allow-empty -m one
+fixture_git -C "$T/n62" tag rel/1.0
+git -C "$T/n62" push -q "$T/github/nested62.git" main rel/1.0
+old62=$(git --git-dir="$T/github/nested62.git" rev-parse rel/1.0)
+git init -q --bare "$T/gitlab/nested62.git"
+seed_ref "$T/gitlab/nested62.git" "$T/github/nested62.git" "$old62" refs/tags/rel/1.0
+fixture_git -C "$T/n62" commit -q --amend --allow-empty -m two
+fixture_git -C "$T/n62" tag -f rel/1.0
+git -C "$T/n62" push -qf "$T/github/nested62.git" rel/1.0
+new62=$(git --git-dir="$T/github/nested62.git" rev-parse rel/1.0)
+seed_ref "$T/gitlab/nested62.git" "$T/n62/.git" "$new62" refs/tags/rewritten/20260101-000000/rel/1.0
+out62=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" nested62 2>&1); rc62=$?
+cnt62=$(git --git-dir="$T/gitlab/nested62.git" for-each-ref refs/tags/rewritten/ --format='%(refname)' | wc -l)
+obj62=$(git --git-dir="$T/gitlab/nested62.git" for-each-ref 'refs/tags/rewritten/*/rel/1.0' --format='%(objectname)')
+tip62=$(git --git-dir="$T/gitlab/nested62.git" rev-parse refs/tags/rel/1.0 2>/dev/null) || tip62=""
+if [[ $rc62 == 0 ]] && [[ "$cnt62" == 1 ]] && [[ "$obj62" == "$new62" ]] && [[ "$tip62" == "$old62" ]] \
+   && grep -qF 'ok:gitlab-rewritten refs/tags/rel/1.0' <<<"$out62"; then
+  p 62
+else
+  f 62
+fi
+
 echo "PASS $ok FAIL $((total-ok))"
 [[ $ok == $total ]]

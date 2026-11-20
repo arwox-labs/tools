@@ -15,6 +15,8 @@ if ! [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
       fi
     done
   fi
+  archive_script="$(readlink -f -- "${BASH_SOURCE[0]}")" || exit 1
+  source "${archive_script%/*}/code-archive-refs" || exit 1
 fi
 CA_ENV_FILE="${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}"
 set -a; . "$CA_ENV_FILE"; set +a
@@ -154,6 +156,17 @@ notify_ok(){
   local name="$1"
   rm -f "$CA_STATE_DIR/$name.fail"
 }
+# Production GitLab rejects a leading dot in a project slug, so the one GitHub
+# source whose name begins with a dot is archived under a fixed destination
+# name. The source name still keys the local copy, state, locks and journal;
+# only the GitLab project, its URLs and the drill restore use the mapped name.
+gitlab_name(){
+  case "$1" in .github) printf 'dot-github';; *) printf '%s' "$1";; esac
+}
+# A real source carrying the reserved destination name would share one project
+# with the source mapped onto it — two archives merged into one — so it fails
+# closed instead of writing there.
+gitlab_reserved(){ [[ "$1" == dot-github ]]; }
 # U8b: ensure the GitLab target project exists and is private, creating it in
 # its group if missing. Sets $result and returns 1 on any failure. The token is
 # fed on stdin (`-H @-`) so it never appears in the process args.
@@ -227,7 +240,11 @@ gitlab_protect_branches(){
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
 # condition so a failure doesn't abort the whole pass.
 mirror_name(){
-  local name="$1" owner="${2:-}" src dst existing=0 ferr
+  local name="$1" owner="${2:-}" src dst existing=0 ferr gl_name
+  if gitlab_reserved "$name"; then
+    result=err:collision; error_reason='reserved destination of .github'; return 1
+  fi
+  gl_name="$(gitlab_name "$name")"
   if [[ -n "$owner" ]]; then src="$(github_base_for "$owner")/$name.git"; else src="$CA_GITHUB_BASE/$name.git"; fi
   dst="$CA_REPOS_DIR/$name.git"
   result=ok; error_reason=""
@@ -333,14 +350,14 @@ mirror_name(){
   # U8a: push to GitLab without force; rejected refs are archived separately.
   if [[ "$CA_GITLAB_BASE" == /* ]]; then
     # Local path mode: create bare repo if missing
-    gl_path="$CA_GITLAB_BASE/$name.git"
+    gl_path="$CA_GITLAB_BASE/$gl_name.git"
     if [[ ! -d "$gl_path" ]]; then
       if ! gl_out="$(git init -q --bare "$gl_path" 2>&1)"; then result=err:gitlab; error_reason="$gl_out"; return 1; fi
     fi
     gl_dest="$gl_path"
   else
     # HTTPS mode: set up gitlab remote
-    gl_dest="$CA_GITLAB_BASE/$name.git"
+    gl_dest="$CA_GITLAB_BASE/$gl_name.git"
     if git --git-dir="$dst" config --get remote.gitlab.url >/dev/null 2>&1; then
       if ! gl_out="$(git --git-dir="$dst" remote set-url gitlab "$gl_dest" 2>&1)"; then result=err:gitlab; error_reason="$gl_out"; return 1; fi
     else
@@ -349,29 +366,24 @@ mirror_name(){
     gl_dest="gitlab"
     # U8b: verify the target project exists and is private (creating it if
     # missing) before pushing.
-    if [[ "$CA_GITLAB_BASE" == https://* ]] && ! gitlab_ensure_project "$name"; then
+    if [[ "$CA_GITLAB_BASE" == https://* ]] && ! gitlab_ensure_project "$gl_name"; then
       return 1
     fi
     # U7c: protect the `*` branch (no delete/force-push) when the project was
     # just created.
     if [[ "$CA_GITLAB_BASE" == https://* ]] && [[ "$gitlab_created" == 1 ]]; then
       gitlab_created=0
-      gitlab_protect_branches "$name" "$gitlab_project_id" || return 1
+      gitlab_protect_branches "$gl_name" "$gitlab_project_id" || return 1
     fi
   fi
   # U8a: push all heads+tags without force; on a "not fast-forward" rejection
   # archive the rejected ref under rewritten/<ts>/<dest-name> and keep going.
   gl_push "$dst" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' || return 1
-  if ! gl_refs="$(timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" ls-remote --heads --tags "$gl_dest" 2>&1)"; then
+  if ! gl_refs="$(timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" ls-remote --refs --heads --tags "$gl_dest" 2>&1)"; then
     result=err:gitlab; error_reason="$gl_refs"; return 1
   fi
-  missing=()
-  while read -r ref obj; do
-    [[ -n "$ref" ]] || continue
-    if ! awk -v obj="$obj" '$1 == obj { found=1 } END { exit !found }' <<<"$gl_refs"; then
-      missing+=("$ref")
-    fi
-  done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags)
+  local -a missing=()
+  archive_missing_refs "$dst" "$gl_refs" missing
   if (( ${#missing[@]} )); then
     result=err:incomplete; error_reason="${#missing[@]} missing"; return 1
   fi
@@ -402,10 +414,23 @@ expand_refspec(){
     printf '%s:%s\n' "$src" "$dst"
   fi
 }
+# A destination ref that cannot take a name because a parent ref or a child ref
+# already occupies it (foo against foo/bar) is a rewritten name, not a refusal:
+# the source turned one ref into the other. Any other rejection (declined hook,
+# protected branch, stale info) stays a terminal failure of the pass.
+dest_conflict(){
+  local repo="$1" dest="$2" category="$3" existing
+  while read -r existing; do
+    [[ -n "$existing" ]] || continue
+    case "$existing" in "$dest"/*) return 0;; esac
+    case "$dest" in "$existing"/*) return 0;; esac
+  done < <(timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" ls-remote --refs "$gl_dest" "refs/$category/*" 2>/dev/null | awk '{print $2}')
+  return 1
+}
 gl_push(){
   local repo="$1"; shift
   local line refspec ref_src ref_dest ref_category dest_name ts rewritten_ref retry_out retry_rc obj
-  local rr rs retry_refs
+  local rr rs retry_refs found gobj gref
   local -a rewritten_refs=()
   push_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
   # U7f: a source ref vanished between composing the ref list and the push
@@ -426,16 +451,33 @@ gl_push(){
     refspec=$(printf '%s\n' "$line" | awk '{print $2}')
     ref_src="${refspec%%:*}"
     ref_dest="${refspec#*:}"
-    # Already archived the exact object? Then a re-push must not add a second
-    # rewritten ref — mark it handled and keep going (idempotent retries).
-    obj="$(git --git-dir="$repo" rev-parse "$ref_src" 2>/dev/null || true)"
-    if timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" ls-remote "$gl_dest" 'refs/*/rewritten/*' 2>/dev/null | awk -v o="$obj" '$1 == o { found=1 } END { exit !found }'; then
-      rewritten_refs+=("$ref_dest")
-      continue
-    fi
+    # Only a rejection that means "the source rewrote this ref" is archived: a
+    # non-fast-forward or fetch-first branch, a tag that already exists, or a
+    # name the destination cannot take because a parent or child ref holds it.
+    # Any other rejection (declined hook, protected branch, stale info) is a
+    # terminal failure of the pass and is never turned into a rewritten ref.
     dest_rest="${ref_dest#refs/}"    # heads/main | heads/server/main
     ref_category="${dest_rest%%/*}"  # heads|tags
     dest_name="${dest_rest#*/}"      # main | server/main
+    case "$line" in
+      *'[rejected] (non-fast-forward)'*|*'[rejected] (fetch first)'*|*'[rejected] (already exists)'*) ;;
+      *) if ! dest_conflict "$repo" "$ref_dest" "$ref_category"; then result="err:gitlab"; error_reason="$line"; return 1; fi;;
+    esac
+    # Already archived the exact object under the same kind and full leaf? Then
+    # a re-push must not add a second rewritten ref — mark it handled and keep
+    # going (idempotent retries). Identity is the writer's dated segment plus
+    # the full leaf, so a sibling ref, an arbitrary dated segment or an
+    # unrelated archive name holding that object is not it.
+    obj="$(git --git-dir="$repo" rev-parse "$ref_src" 2>/dev/null || true)"
+    found=0
+    while read -r gobj gref; do
+      [[ "$gobj" == "$obj" ]] || continue
+      if rewritten_leaf "$gref" "$ref_category" && [[ "$rl_leaf" == "$dest_name" ]]; then found=1; break; fi
+    done < <(timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" ls-remote --refs "$gl_dest" "refs/$ref_category/rewritten/*" 2>/dev/null || true)
+    if (( found )); then
+      rewritten_refs+=("$ref_dest")
+      continue
+    fi
     ts="$(date +%Y%m%d-%H%M%S)"
     rewritten_ref="refs/$ref_category/rewritten/$ts/$dest_name"
     retry_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?

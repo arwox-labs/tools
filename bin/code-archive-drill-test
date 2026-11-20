@@ -18,6 +18,8 @@ DRILL_SCRIPT="$SCRIPT_DIR/code-archive-drill"
 ENV_FILE="$T/.env"
 cat > "$ENV_FILE" <<EOF
 export CA_GITHUB_BASE="$T/github"
+export CA_GITHUB_SRC="$T/%s"
+export CA_GITHUB_BASES=github
 export CA_GITLAB_BASE="$T/gitlab"
 export CA_REPOS_DIR="$T/repos"
 export CA_STATE_DIR="$T/state"
@@ -64,35 +66,38 @@ else
   ((failed++))
 fi
 
-# TEST 1b: an extra local ref with unchanged GitLab and unchanged prior counts
-# is local-ahead, not a shrink (D11 regression): must return drill:ok.
+# TEST 1b: a local-only ref is unverified, not a successful copy — every source
+# head/tag is matched by name + OID (the D11 "local-ahead" pass is gone).
 extra_sha=$(git --git-dir="$T/repos/demo.git" rev-parse HEAD)
 git --git-dir="$T/repos/demo.git" update-ref refs/heads/extra "$extra_sha"
 output=$(run_drill demo 2>&1)
 rc=$?
 git --git-dir="$T/repos/demo.git" update-ref -d refs/heads/extra
-if [[ $rc -eq 0 ]] && echo "$output" | grep -q "drill:ok" && ! echo "$output" | grep -q "refs-shrunk"; then
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q "drill:mismatch incomplete demo layer=gitlab 1 missing"; then
   ((passed++))
 else
   ((failed++))
 fi
 
-# TEST 2: drill:mismatch refs-shrunk
-ref_to_del=$(git --git-dir="$T/repos/demo.git" for-each-ref --format='%(refname)' | head -1)
-if [[ -n "$ref_to_del" ]]; then
-  git --git-dir="$T/repos/demo.git" update-ref -d "$ref_to_del" >/dev/null 2>&1
-fi
+# TEST 2: a stale same-name tip (GitLab keeps an older OID for the same ref) is
+# a mismatch — equal ref names alone are not proof of a copy.
+printf '%s\n' '2026-10-02T10:00:00Z' > "$T/state/demo.pushed_at"
+stale_ref=$(git --git-dir="$T/repos/demo.git" for-each-ref --count=1 --format='%(refname)' refs/heads)
+stale_orig=$(git --git-dir="$T/repos/demo.git" rev-parse "$stale_ref")
+stale_tree=$(git --git-dir="$T/repos/demo.git" rev-parse "$stale_ref^{tree}")
+stale_sha=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  git --git-dir="$T/repos/demo.git" commit-tree "$stale_tree" -m stale)
+git --git-dir="$T/repos/demo.git" update-ref "$stale_ref" "$stale_sha"
 output=$(run_drill demo 2>&1)
 rc=$?
-if [[ $rc -ne 0 ]] && echo "$output" | grep -q "drill:mismatch refs-shrunk"; then
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q "drill:mismatch incomplete demo layer=gitlab 1 missing"; then
   ((passed++))
 else
   ((failed++))
 fi
 
-# Restore ref
-main_sha=$(git --git-dir="$T/github/demo.git" rev-parse main 2>/dev/null || git --git-dir="$T/github/demo.git" rev-parse master)
-git --git-dir="$T/repos/demo.git" update-ref refs/heads/main "$main_sha" 2>/dev/null || git --git-dir="$T/repos/demo.git" update-ref refs/heads/master "$main_sha" 2>/dev/null || true
+# Restore the ref to the source OID, so later cases see an exact copy again.
+git --git-dir="$T/repos/demo.git" update-ref "$stale_ref" "$stale_orig"
 
 # TEST 3: drill:mismatch restore
 output=$(run_drill nosuch 2>&1)
@@ -128,7 +133,7 @@ printf '%s\n' '#!/bin/sh' 'echo "$*" >> "$SSH_ARGS"' 'exit 1' > "$T/stub-ssh"
 chmod +x "$T/stub-ssh"
 rm -f "$T/ssh.args"
 source "$ENV_FILE"
-output=$(CA_GITHUB_BASE=git@h:o GIT_SSH_COMMAND="$T/stub-ssh" SSH_ARGS="$T/ssh.args" CA_DRILL_NAME=demo bash "$DRILL_SCRIPT" 2>&1)
+output=$(CA_GITHUB_BASES= CA_GITHUB_BASE=git@h:o GIT_SSH_COMMAND="$T/stub-ssh" SSH_ARGS="$T/ssh.args" CA_DRILL_NAME=demo bash "$DRILL_SCRIPT" 2>&1)
 if grep -qF 'o/demo.git' "$T/ssh.args"; then
   ((passed++))
 else
@@ -157,13 +162,135 @@ else
   ((failed++))
 fi
 
-# TEST 9: GitHub HEAD present only under rewritten/ is still restorable.
+# TEST 9: GitHub HEAD present only under rewritten/ is still restorable, and a
+# dated rewritten ref of the same kind and full leaf satisfies the ref check.
 head9=$(git --git-dir="$T/github/demo.git" rev-parse HEAD)
-git --git-dir="$T/gitlab/demo.git" update-ref -d refs/heads/main 2>/dev/null || git --git-dir="$T/gitlab/demo.git" update-ref -d refs/heads/master
-git --git-dir="$T/gitlab/demo.git" update-ref refs/heads/rewritten/test/main "$head9"
+ref9=$(git --git-dir="$T/repos/demo.git" for-each-ref --count=1 --format='%(refname)' refs/heads)
+git --git-dir="$T/gitlab/demo.git" update-ref -d "$ref9" 2>/dev/null || true
+git --git-dir="$T/gitlab/demo.git" update-ref "refs/heads/rewritten/20260101-000000/${ref9#refs/heads/}" "$head9"
+printf '%s\n' '2026-10-02T10:00:00Z' > "$T/state/demo.pushed_at"
 source "$ENV_FILE"
 output=$(CA_DRILL_NAME=demo bash "$DRILL_SCRIPT" 2>&1)
 if [[ $output == *'drill:ok'* ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# Cases 10-12: one isolated fixture per case — a local copy of the source plus a
+# GitLab copy whose refs are rewritten, so only the identity rule decides.
+case_init(){
+  local c="$1"
+  mkdir -p "$c/repos" "$c/state" "$c/gitlab"
+  git clone --bare "$T/github/demo.git" "$c/repos/demo.git" 2>/dev/null
+  git clone --bare "$T/github/demo.git" "$c/gitlab/demo.git" 2>/dev/null
+  printf '%s\n' '2026-10-02T10:00:00Z' > "$c/state/demo.pushed_at"
+}
+case_run(){
+  local c="$1"
+  CA_DRILL_NAME=demo CA_ENV_FILE=/dev/null CA_GITHUB_BASE="$T/github" \
+    CA_GITHUB_SRC="$T/%s" CA_GITHUB_BASES=github CA_GITLAB_BASE="$c/gitlab" \
+    CA_REPOS_DIR="$c/repos" CA_STATE_DIR="$c/state" CA_LOG="$c/drill.log" \
+    CA_DRILL_DIR="$c/drill" bash "$DRILL_SCRIPT" 2>&1
+}
+
+# TEST 10: a sibling ref (refs/heads/server/main) holding the same OID is not
+# the source ref refs/heads/main.
+c10="$T/case10"; case_init "$c10"
+ref10=$(git --git-dir="$c10/repos/demo.git" for-each-ref --count=1 --format='%(refname)' refs/heads)
+head10=$(git --git-dir="$c10/repos/demo.git" rev-parse "$ref10")
+git --git-dir="$c10/gitlab/demo.git" update-ref -d "$ref10" 2>/dev/null || true
+git --git-dir="$c10/gitlab/demo.git" update-ref "refs/heads/server/${ref10#refs/heads/}" "$head10"
+output=$(case_run "$c10"); rc=$?
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q 'drill:mismatch incomplete demo layer=gitlab 1 missing'; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 11: a valid qualified rewritten ref (same kind, dated segment, full leaf,
+# same OID) is accepted — no false mismatch.
+c11="$T/case11"; case_init "$c11"
+ref11=$(git --git-dir="$c11/repos/demo.git" for-each-ref --count=1 --format='%(refname)' refs/heads)
+head11=$(git --git-dir="$c11/repos/demo.git" rev-parse "$ref11")
+git --git-dir="$c11/gitlab/demo.git" update-ref -d "$ref11" 2>/dev/null || true
+git --git-dir="$c11/gitlab/demo.git" update-ref "refs/heads/rewritten/20260101-000000/${ref11#refs/heads/}" "$head11"
+output=$(case_run "$c11"); rc=$?
+if [[ $rc -eq 0 ]] && echo "$output" | grep -q 'drill:ok'; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 12: an unrelated archive name (refs/heads/archive/<ts>/main) with that
+# OID is not the rewritten namespace and does not satisfy the check.
+c12="$T/case12"; case_init "$c12"
+ref12=$(git --git-dir="$c12/repos/demo.git" for-each-ref --count=1 --format='%(refname)' refs/heads)
+head12=$(git --git-dir="$c12/repos/demo.git" rev-parse "$ref12")
+git --git-dir="$c12/gitlab/demo.git" update-ref -d "$ref12" 2>/dev/null || true
+git --git-dir="$c12/gitlab/demo.git" update-ref "refs/heads/archive/20260101-000000/${ref12#refs/heads/}" "$head12"
+output=$(case_run "$c12"); rc=$?
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q 'drill:mismatch incomplete demo layer=gitlab 1 missing'; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 13: the hidden .github state marker is enumerated and both sides are read
+# under the mapped name — the local copy .github.git against the GitLab project
+# dot-github.
+c13="$T/case13"; mkdir -p "$c13/github" "$c13/repos" "$c13/state" "$c13/gitlab"
+git clone --bare "$T/github/demo.git" "$c13/github/.github.git" 2>/dev/null
+git clone --bare "$T/github/demo.git" "$c13/repos/.github.git" 2>/dev/null
+git clone --bare "$T/github/demo.git" "$c13/gitlab/dot-github.git" 2>/dev/null
+printf '%s\n' '2026-10-02T10:00:00Z' > "$c13/state/.github.pushed_at"
+output=$(CA_DRILL_NAME=.github CA_ENV_FILE=/dev/null CA_GITHUB_BASE="$c13/github" \
+  CA_GITHUB_SRC="$c13/%s" CA_GITHUB_BASES=github CA_GITLAB_BASE="$c13/gitlab" \
+  CA_REPOS_DIR="$c13/repos" CA_STATE_DIR="$c13/state" CA_LOG="$c13/drill.log" \
+  CA_DRILL_DIR="$c13/drill" bash "$DRILL_SCRIPT" 2>&1)
+rc=$?
+if [[ $rc -eq 0 ]] && [[ $output == *'drill:ok'* ]] && [[ $output != *'drill:mismatch'* ]] \
+   && [[ -f "$c13/state/.github.refs" ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 14: a rewritten segment that is not exactly YYYYMMDD-HHMMSS is not the
+# documented namespace and leaves the source ref missing.
+c14="$T/case14"; case_init "$c14"
+ref14=$(git --git-dir="$c14/repos/demo.git" for-each-ref --count=1 --format='%(refname)' refs/heads)
+head14=$(git --git-dir="$c14/repos/demo.git" rev-parse "$ref14")
+git --git-dir="$c14/gitlab/demo.git" update-ref -d "$ref14" 2>/dev/null || true
+git --git-dir="$c14/gitlab/demo.git" update-ref "refs/heads/rewritten/20260101-0000/${ref14#refs/heads/}" "$head14"
+output=$(case_run "$c14"); rc=$?
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q 'drill:mismatch incomplete demo layer=gitlab 1 missing'; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 15: a nested source branch server/main is satisfied by the dated rewritten
+# ref that keeps its full leaf.
+c15="$T/case15"; case_init "$c15"
+head15=$(git --git-dir="$c15/repos/demo.git" rev-parse HEAD)
+git --git-dir="$c15/repos/demo.git" update-ref refs/heads/server/main "$head15"
+git --git-dir="$c15/gitlab/demo.git" update-ref refs/heads/rewritten/20260101-000000/server/main "$head15"
+output=$(case_run "$c15"); rc=$?
+if [[ $rc -eq 0 ]] && [[ $output == *'drill:ok'* ]] && [[ $output != *'drill:mismatch'* ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 16: a rewritten ref that drops the nested part of the leaf does not stand
+# in for server/main.
+c16="$T/case16"; case_init "$c16"
+head16=$(git --git-dir="$c16/repos/demo.git" rev-parse HEAD)
+git --git-dir="$c16/repos/demo.git" update-ref refs/heads/server/main "$head16"
+git --git-dir="$c16/gitlab/demo.git" update-ref refs/heads/rewritten/20260101-000000/main "$head16"
+output=$(case_run "$c16"); rc=$?
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q 'drill:mismatch incomplete demo layer=gitlab 1 missing'; then
   ((passed++))
 else
   ((failed++))
