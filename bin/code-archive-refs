@@ -1,4 +1,79 @@
 #!/usr/bin/env bash
+# One protected destination shared by the archive writer and restore drill.
+gitlab_name(){
+  case "$1" in .github) printf 'dot-github';; *) printf '%s' "$1";; esac
+}
+
+gitlab_reserved(){
+  [[ "${1,,}" == dot-github || ( "${1,,}" == .github && "$1" != .github ) ]]
+}
+
+archive_bare_id(){
+  [[ "$(git --git-dir="$1" rev-parse --is-bare-repository 2>/dev/null)" == true ]] || return 1
+  stat -L -c '%d:%i:%w' -- "$1"
+}
+
+archive_source_key(){
+  local path id
+  case "$1" in
+    /*) archive_bare_id "$1"; return;;
+    git@github.com:*) path="${1#git@github.com:}";;
+    ssh://git@github.com/*) path="${1#ssh://git@github.com/}";;
+    https://github.com/*) path="${1#https://github.com/}";;
+    *) return 1;;
+  esac
+  path="${path%.git}"
+  [[ "$path" =~ ^[A-Za-z0-9-]+/\.github$ ]] || return 1
+  id=$(timeout 30 gh api --hostname github.com "repos/$path" --jq .id 2>/dev/null) || return 1
+  [[ "$id" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf 'github.com:%s\n' "$id"
+}
+
+archive_gitlab_api(){
+  local host="${CA_GITLAB_BASE#https://}"
+  local origin="https://${host%%/*}"
+  local api="${CA_GITLAB_API:-$origin/api/v4}"
+  [[ "$api" == "$origin/"* ]] || return 1
+  printf '%s\n' "${api%/}"
+}
+
+archive_destination_key(){
+  local base="${CA_GITLAB_BASE%/}" path api response code id
+  case "$base" in
+    /*) archive_bare_id "$base/dot-github.git";;
+    https://*)
+      path="${base#https://}"; path="${path#*/}"
+      path=$(jq -nr --arg path "$path/dot-github" '$path | @uri') || return 1
+      api=$(archive_gitlab_api) || return 1
+      [[ -n "${GITLAB_MIRROR_TOKEN:-}" ]] || return 1
+      response=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" |
+        curl -sS --max-time 30 -w $'\n%{http_code}' -H @- "$api/projects/$path" 2>/dev/null) || return 1
+      code="${response##*$'\n'}"
+      [[ "$code" == 200 ]] || return 1
+      id=$(jq -er --arg url "$base/dot-github.git" \
+        'select(.visibility == "private" and .http_url_to_repo == $url) | .id' \
+        <<< "${response%$'\n'*}") || return 1
+      [[ "$id" =~ ^[1-9][0-9]*$ ]] || return 1
+      printf '%s:%s\n' "$api" "$id"
+      ;;
+    *) return 1;;
+  esac
+}
+
+archive_claim_value(){
+  local cache_id
+  cache_id=$(archive_bare_id "$2") || return 1
+  printf '%s\n' 'v1' "$1" "$cache_id" "$3"
+}
+
+archive_check_claim(){
+  local target claim
+  [[ -f "$CA_STATE_DIR/.github.destination" && ! -L "$CA_STATE_DIR/.github.destination" ]] || return 1
+  target=$(archive_destination_key) || return 1
+  claim=$(archive_claim_value "$1" "$2" "$target") || return 1
+  [[ "$claim" == "$(<"$CA_STATE_DIR/.github.destination")" ]]
+}
+
 # Rejected refs use refs/<kind>/rewritten/YYYYMMDD-HHMMSS/<full leaf>.
 # Set rl_leaf only for that shape, preserving nested names.
 rewritten_leaf(){

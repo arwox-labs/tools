@@ -8,7 +8,7 @@ export CA_NOTIFY_ENV=/nonexistent/code-archive-test
 # Fixture commits live only in temporary repositories and use generic messages.
 fixture_git(){ command git -c core.hooksPath=/dev/null "$@"; }
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
-T="${T:-/tmp/test-code-archive-$$}"
+T="${T:-$(mktemp -d "${TMPDIR:-/tmp}/test-code-archive.XXXXXX")}" || exit 1
 export CA_GITLAB_BASE="$T/gitlab-early"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab" "$T/gitlab-early"
@@ -1053,6 +1053,119 @@ if [[ $rc58 == 1 ]] && grep -qF 'dot-github err:collision' <<<"$out58" \
   p 58
 else
   f 58
+fi
+
+# Reverse collision: the legacy destination predates the mapped source.
+collision="$T/legacy-collision"
+mkdir -p "$collision"/{gitlab,repos,state}
+git clone -q --bare "$T/github/dot-github.git" "$collision/gitlab/dot-github.git"
+git clone -q --bare "$T/github/dot-github.git" "$collision/repos/dot-github.git"
+printf '%s\n' 2026-10-02T10:00:00Z > "$collision/state/dot-github.pushed_at"
+before_collision=$(git --git-dir="$collision/gitlab/dot-github.git" show-ref)
+out_collision=$(env "${localenv[@]}" "${offline[@]}" CA_REPOS_DIR="$collision/repos" \
+  CA_GITLAB_BASE="$collision/gitlab" CA_STATE_DIR="$collision/state" "$bin/code-archive" .github 2>&1)
+rc_collision=$?
+if [[ "$rc_collision" == 1 && "$out_collision" == *'.github err:collision'* ]] \
+  && [[ ! -e "$collision/repos/.github.git" ]] \
+  && [[ "$(git --git-dir="$collision/gitlab/dot-github.git" show-ref)" == "$before_collision" ]]; then
+  p destination-legacy-collision
+else
+  f destination-legacy-collision
+fi
+
+printf 'dot-github\t2026-10-02T10:00:00Z\t0\tfalse\n.github\t2026-10-02T10:00:00Z\t0\tfalse\n' > "$collision/list.tsv"
+out_changed=$(env "${localenv[@]}" "${offline[@]}" CA_REPOS_DIR="$collision/repos" \
+  CA_GITLAB_BASE="$collision/gitlab" CA_STATE_DIR="$collision/state" CA_LIST_FILE="$collision/list.tsv" \
+  CA_DRILL_DOW=0 "$bin/code-archive" --changed 2>&1)
+rc_changed=$?
+out_case=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" Dot-GitHub 2>&1)
+rc_case=$?
+out_retry=$(env "${localenv[@]}" "${offline[@]}" "$bin/code-archive" .github 2>&1)
+rc_retry=$?
+if [[ $rc_changed == 1 && "$out_changed" == *'dot-github err:collision'* && "$out_changed" == *'.github err:collision'* ]] \
+  && [[ $rc_case == 1 && "$out_case" == *'Dot-GitHub err:collision'* && $rc_retry == 0 ]] \
+  && [[ "$(git --git-dir="$collision/gitlab/dot-github.git" show-ref)" == "$before_collision" ]]; then
+  p destination-scheduled-and-retry
+else
+  f destination-scheduled-and-retry
+fi
+
+# Project API simulation. Git pushes are rewritten to a disposable bare
+# repository. A lost creation response may leave a project that we cannot claim.
+https_case="$T/ownership-https"
+mkdir -p "$https_case"/{bin,gitlab,repos,state}
+git init -q --bare "$https_case/gitlab/dot-github.git"
+cat > "$https_case/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+out="" method=GET
+while (( $# )); do
+  case "$1" in
+    -o) out="$2"; shift;;
+    -X) method="$2"; shift;;
+    https://*) url="$1";;
+  esac
+  shift
+done
+code=200
+case "$method:$url" in
+  'GET:https://gitlab.example/api/v4/projects/group%2Fdot-github')
+    if [[ -f "$MOCK_PROJECT" ]]; then
+      body=$(cat "$MOCK_PROJECT")
+    else code=404; body='{}'; fi;;
+  'GET:https://gitlab.example/api/v4/groups/group') body='{"id":9}';;
+  'POST:https://gitlab.example/api/v4/projects')
+    body='{"id":17,"visibility":"private","http_url_to_repo":"https://gitlab.example/group/dot-github.git"}'
+    printf '%s\n' "$body" > "$MOCK_PROJECT"; code=201;;
+  */protected_branches) body='[{"name":"*"}]';;
+  *) exit 1;;
+esac
+if [[ -n "$out" ]]; then
+  printf '%s\n' "$body" > "$out"
+else
+  printf '%s\n' "$body"
+fi
+printf '%s' "$code"
+if [[ "$method:$url" == POST:*/projects && "${MOCK_AMBIGUOUS:-0}" == 1 ]]; then exit 28; fi
+CURL
+cat > "$https_case/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[[ "${*: -1}" == .id ]] || exit 1
+printf '%s\n' "${MOCK_GITHUB_ID:-51}"
+GH
+chmod +x "$https_case/bin/"{curl,gh}
+https_env=(PATH="$https_case/bin:$PATH" CA_GITHUB_BASE=https://github.com/fixture
+  CA_GITLAB_BASE=https://gitlab.example/group CA_GITLAB_API=https://gitlab.example/api/v4
+  CA_REPOS_DIR="$https_case/repos" CA_STATE_DIR="$https_case/state" MOCK_PROJECT="$https_case/project"
+  GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0="url.$T/github/.insteadOf" GIT_CONFIG_VALUE_0=https://github.com/fixture/
+  GIT_CONFIG_KEY_1="url.$https_case/gitlab/.insteadOf" GIT_CONFIG_VALUE_1=https://gitlab.example/group/)
+out_ambiguous=$(env "${localenv[@]}" "${https_env[@]}" MOCK_AMBIGUOUS=1 "$bin/code-archive" .github 2>&1)
+rc_ambiguous=$?
+out_existing=$(env "${localenv[@]}" "${https_env[@]}" "$bin/code-archive" .github 2>&1)
+rc_existing=$?
+if [[ $rc_ambiguous == 1 && $rc_existing == 1 && -f "$https_case/project" ]] \
+  && [[ ! -e "$https_case/state/.github.destination" && ! -e "$https_case/repos/.github.git" ]] \
+  && [[ -z "$(git --git-dir="$https_case/gitlab/dot-github.git" for-each-ref)" ]]; then
+  p destination-https-unconfirmed
+else
+  f destination-https-unconfirmed
+fi
+mv "$https_case/project" "$https_case/ambiguous-project"
+out_create=$(env "${localenv[@]}" "${https_env[@]}" "$bin/code-archive" .github 2>&1)
+rc_create=$?
+out_verified=$(env "${localenv[@]}" "${https_env[@]}" "$bin/code-archive" .github 2>&1)
+rc_verified=$?
+out_other_source=$(env "${localenv[@]}" "${https_env[@]}" MOCK_GITHUB_ID=52 "$bin/code-archive" .github 2>&1)
+rc_other_source=$?
+sed 's/"id":17/"id":18/' "$https_case/ambiguous-project" > "$https_case/project"
+out_replaced=$(env "${localenv[@]}" "${https_env[@]}" "$bin/code-archive" .github 2>&1)
+rc_replaced=$?
+if [[ $rc_create == 0 && "$out_create" == *'.github ok:created'* && $rc_verified == 0 ]] \
+  && [[ $rc_other_source == 1 && "$out_other_source" == *'err:collision'* ]] \
+  && [[ $rc_replaced == 1 && "$out_replaced" == *'err:collision'* ]] \
+  && [[ "$(git --git-dir="$https_case/gitlab/dot-github.git" rev-parse main)" == "$gh57" ]]; then
+  p destination-https-identity
+else
+  f destination-https-identity
 fi
 
 # Check 59: a rewritten segment that is not exactly YYYYMMDD-HHMMSS is not the
