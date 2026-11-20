@@ -33,7 +33,7 @@ if [[ $rc == 0 && -z $out ]]; then echo 'PASS 7 goal_with_method_passes'; ok=$((
 
 in=$(jq -nc '{hook_event_name:"PreToolUse",tool_name:"Agent",tool_input:{}}')
 out=$(printf '%s' "$in" | "$dir/goal-gate")
-if jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1; then
+if jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("/bin/code-agent"))' <<<"$out" >/dev/null 2>&1; then
   echo 'PASS 9 agent_denied'; ok=$((ok+1))
 else echo "FAIL 9 agent_denied: $out"; fi
 

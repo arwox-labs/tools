@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+mkdir -p "$root/.agent-work"
+tmp=$(mktemp -d "$root/.agent-work/code-agent-compat.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+[[ -L $root/bin/code-agent && $(readlink "$root/bin/code-agent") == code-channel ]] || {
+  echo 'code-agent-compat-test: code-agent must link to code-channel' >&2
+  exit 1
+}
+
+agent_help=$("$root/bin/code-agent" --help)
+channel_help=$("$root/bin/code-channel" --help)
+[[ $agent_help == *'usage: code-agent go '* ]]
+[[ $channel_help == *'usage: code-channel go '* ]]
+[[ ${agent_help//code-agent/code-channel} == "$channel_help" ]] || {
+  echo 'code-agent-compat-test: help output differs beyond command name' >&2
+  exit 1
+}
+
+agent_plan=$("$root/bin/code-agent" --plan)
+channel_plan=$("$root/bin/code-channel" --plan)
+[[ -n $agent_plan && $agent_plan == "$channel_plan" ]] || {
+  echo 'code-agent-compat-test: --plan differs between entry points' >&2
+  exit 1
+}
+
+for command_name in code-agent code-channel; do
+  set +e
+  "$root/bin/$command_name" use retired 'compatibility check' >/dev/null 2>"$tmp/$command_name.err"
+  status=$?
+  set -e
+  [[ $status == 28 ]] || {
+    echo "code-agent-compat-test: $command_name returned $status, expected 28" >&2
+    exit 1
+  }
+done
+
+cat > "$tmp/launches.jsonl" <<'JSON'
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"code-agent auto /workspace /workspace/TZ.md"}},{"type":"tool_use","name":"Bash","input":{"command":"env X=1 /root/workspaces/tools/bin/code-channel audit /workspace /workspace/TZ.md"}},{"type":"tool_use","name":"Bash","input":{"command":"tail -n 2 /tmp/code-agent.log"}}]}}
+JSON
+share=$("$root/bin/helper-share" --session "$tmp/launches.jsonl")
+[[ $share == 'helper-share: 66% helpers=2 lead=1' ]] || {
+  echo "code-agent-compat-test: unexpected accounting: $share" >&2
+  exit 1
+}
+
+for command_name in code-agent code-channel; do
+  decision=$(jq -cn --arg command "xargs $command_name --plan" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$command}}' |
+    LEAD_HINT_STRICT=1 "$root/bin/lead-hint")
+  [[ $(jq -r '.hookSpecificOutput.permissionDecision' <<<"$decision") == deny ]] || {
+    echo "code-agent-compat-test: lead guard differs for $command_name" >&2
+    exit 1
+  }
+done
+
+echo 'code-agent-compat-test: PASS (alias, help, plan, errors, guard, accounting)'

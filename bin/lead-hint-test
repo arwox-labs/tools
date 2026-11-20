@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=280
+total=285
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -713,7 +713,7 @@ fi
 
 tx_lock=$d/txlock.jsonl
 { mk_user; printf '%s\n' '{"type":"user","isMeta":true,"message":{"role":"user","content":"A session-scoped Stop hook is now active with condition: \"test\". ..."}}'; } >"$tx_lock"
-reason_lock='lead-hint code-lock (owner 24.10): the lead session (any cwd under /root) edits only .md/.txt — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
+reason_lock='lead-hint code-lock (owner 24.10): the lead session (any cwd under /root) edits only .md/.txt — route: /root/workspaces/tools/bin/code-agent auto <worktree> <TZ>'
 codelock_case() {
   local num=$1 label=$2 want=$3 cwd=$4 name=$5 input=$6 agent=${7:-} want_reason=${8:-$reason_lock} out rc dec reason
   out=$(mk_pre_cwd "$tx_lock" "$cwd" "$name" "$input" \
@@ -778,7 +778,7 @@ t_codelock_allow_bash_redirect
 t_codelock_allow_bash_bd_note
 t_codelock_deny_edit_json
 
-reason_runlock='lead-run-lock (owner 24.10): the lead does not run scripts — route: /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>'
+reason_runlock='lead-run-lock (owner 24.10): the lead does not run scripts — route: /root/workspaces/tools/bin/code-agent auto|audit <worktree> <TZ>'
 codelock_case 72 't_runlock_deny_sh: Bash sh under /root/workspaces -> deny' deny \
   /root/workspaces/projects Bash '{"command":"sh /root/workspaces/projects/incidents/p.sh"}' '' "$reason_runlock"
 codelock_case 73 't_runlock_allow_jq: Bash jq -n 1+1 -> allow' allow \
@@ -1109,8 +1109,14 @@ hard_case 244 lead_git_C_reset_denied deny 'git -C /x reset --hard' false /tmp
 hard_case 245 lead_allow_channel_help_foreground allow 'code-channel --help' false /tmp
 hard_case 246 lead_allow_channel_h_foreground allow 'code-channel -h' false /tmp
 hard_case 247 lead_allow_channel_plan_foreground allow 'code-channel --plan' false /tmp
+hard_case 248 lead_allow_code_agent_plan_foreground allow 'code-agent --plan' false /tmp
+hard_case 257 lead_allow_code_agent_help_foreground allow 'code-agent --help' false /tmp
 hard_case 249 lead_channel_auto_foreground_denied deny 'code-channel auto /x /y/tz.md' false /tmp
 hard_case 250 lead_channel_audit_foreground_denied deny 'code-channel audit /x /y/tz.md' false /tmp
+hard_case 255 lead_code_agent_auto_foreground_denied deny 'code-agent auto /x /y/tz.md' false /tmp
+hard_case 256 lead_code_agent_audit_foreground_denied deny 'code-agent audit /x /y/tz.md' false /tmp
+hard_case 258 lead_code_agent_auto_background_allowed allow 'code-agent auto /x /y/tz.md' true /tmp
+hard_case 259 lead_code_channel_auto_background_allowed allow 'code-channel auto /x /y/tz.md' true /tmp
 
 hard_case 251 lead_allow_git_C_log allow 'git -C /root/workspaces/tools log -1 --oneline' false /tmp
 hard_case 252 lead_allow_git_gitdir_show allow 'git --git-dir=/root/workspaces/tools/.git show HEAD' false /tmp
