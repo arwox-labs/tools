@@ -6,7 +6,7 @@ passed=0
 failed=0
 
 # Create temp directory
-T="/root/workspaces/sandbox/test-code-archive-drill-$$"
+T=$(mktemp -d "${TMPDIR:-/tmp}/test-code-archive-drill.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
 mkdir -p "$T"/{github,repos,gitlab,state,work} || exit 1
 
@@ -236,9 +236,7 @@ else
   ((failed++))
 fi
 
-# TEST 13: the hidden .github state marker is enumerated and both sides are read
-# under the mapped name — the local copy .github.git against the GitLab project
-# dot-github.
+# TEST 13: identical refs in an unclaimed archive do not prove ownership.
 c13="$T/case13"; mkdir -p "$c13/github" "$c13/repos" "$c13/state" "$c13/gitlab"
 git clone --bare "$T/github/demo.git" "$c13/github/.github.git" 2>/dev/null
 git clone --bare "$T/github/demo.git" "$c13/repos/.github.git" 2>/dev/null
@@ -249,8 +247,27 @@ output=$(CA_DRILL_NAME=.github CA_ENV_FILE=/dev/null CA_GITHUB_BASE="$c13/github
   CA_REPOS_DIR="$c13/repos" CA_STATE_DIR="$c13/state" CA_LOG="$c13/drill.log" \
   CA_DRILL_DIR="$c13/drill" bash "$DRILL_SCRIPT" 2>&1)
 rc=$?
-if [[ $rc -eq 0 ]] && [[ $output == *'drill:ok'* ]] && [[ $output != *'drill:mismatch'* ]] \
-   && [[ -f "$c13/state/.github.refs" ]]; then
+if [[ $rc -eq 1 && $output == *'ownership .github'* && $output == *'restore .github'* ]] \
+   && [[ ! -e "$c13/state/.github.refs" && -f "$c13/state/.github.pushed_at" ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# The writer claims a fresh archive. The drill then verifies and restores it.
+mkdir -p "$c13/fresh-local" "$c13/fresh-target" "$c13/fresh-state" "$c13/stubs"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$c13/stubs/gh"
+chmod +x "$c13/stubs/gh"
+printf '%s\n' 'GITLAB_MIRROR_TOKEN=fixture' > "$c13/env"
+claimed_env=(CA_ENV_FILE="$c13/env" CA_GITHUB_BASE="$c13/github" CA_NO_NOTIFY=1
+  CA_GITLAB_BASE="$c13/fresh-target" CA_REPOS_DIR="$c13/fresh-local" CA_STATE_DIR="$c13/fresh-state"
+  CA_LOG="$c13/drill.log" CA_DRILL_DIR="$c13/drill" CA_LAST_OK="$c13/last-ok")
+env "${claimed_env[@]}" PATH="$c13/stubs:$PATH" "$SCRIPT_DIR/code-archive" .github >/dev/null
+archive_rc=$?
+printf '%s\n' '2026-10-02T10:00:00Z' > "$c13/fresh-state/.github.pushed_at"
+output=$(env "${claimed_env[@]}" CA_DRILL_NAME=.github bash "$DRILL_SCRIPT" 2>&1)
+if [[ $? -eq 0 && $archive_rc -eq 0 && $output == *'drill:ok'* ]] \
+   && [[ -f "$c13/fresh-state/.github.refs" ]]; then
   ((passed++))
 else
   ((failed++))

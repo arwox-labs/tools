@@ -156,17 +156,6 @@ notify_ok(){
   local name="$1"
   rm -f "$CA_STATE_DIR/$name.fail"
 }
-# Production GitLab rejects a leading dot in a project slug, so the one GitHub
-# source whose name begins with a dot is archived under a fixed destination
-# name. The source name still keys the local copy, state, locks and journal;
-# only the GitLab project, its URLs and the drill restore use the mapped name.
-gitlab_name(){
-  case "$1" in .github) printf 'dot-github';; *) printf '%s' "$1";; esac
-}
-# A real source carrying the reserved destination name would share one project
-# with the source mapped onto it — two archives merged into one — so it fails
-# closed instead of writing there.
-gitlab_reserved(){ [[ "$1" == dot-github ]]; }
 # U8b: ensure the GitLab target project exists and is private, creating it in
 # its group if missing. Sets $result and returns 1 on any failure. The token is
 # fed on stdin (`-H @-`) so it never appears in the process args.
@@ -174,12 +163,17 @@ gitlab_group_id=""
 gitlab_created=0
 gitlab_project_id=""
 gitlab_ensure_project(){
-  local name="$1" code body vis
+  local name="$1" code body vis path
   local group="${CA_GITLAB_BASE##*/}"
   local api="${CA_GITLAB_API:-https://gitlab.com/api/v4}"
+  if [[ "$name" == dot-github ]]; then
+    path="${CA_GITLAB_BASE#https://}"; path="${path%/}"; path="${path#*/}"
+    group=$(jq -nr --arg path "$path" '$path | @uri') || return 1
+  fi
   gitlab_created=0
   body="$(mktemp)"
-  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- "$api/projects/$group%2F$name")
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- "$api/projects/$group%2F$name") ||
+    { rm -f "$body"; result=err:gitlab; error_reason='project lookup failed'; return 1; }
   if [[ "$code" == 200 ]]; then
     gitlab_project_id="$(jq -r '.id // ""' "$body")"
     vis=$(jq -r '.visibility // ""' "$body")
@@ -205,7 +199,7 @@ gitlab_ensure_project(){
   code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- \
       -X POST --data-urlencode "path=$name" --data-urlencode "name=$name" \
       --data-urlencode "namespace_id=$gitlab_group_id" --data-urlencode "visibility=private" \
-      "$api/projects")
+      "$api/projects") || { rm -f "$body"; result=err:gitlab; error_reason='project creation unconfirmed'; return 1; }
   if [[ "$code" == 201 ]]; then
     gitlab_project_id="$(jq -r '.id // ""' "$body")"
     gitlab_created=1
@@ -236,11 +230,49 @@ gitlab_protect_branches(){
   fi
   rm -f "$body"; result=err:gitlab; error_reason="protect http=$code"; return 1
 }
+
+# Called under the .github source lock. An existing target must carry the
+# recorded project identity even when its refs happen to match the source.
+github_archive_prepare(){
+  local src="$1" cache="$2" target claim api
+  [[ ! -e "$CA_STATE_DIR/.github.destination" && ! -L "$CA_STATE_DIR/.github.destination" ]] || {
+    archive_check_claim "$source_key" "$cache"
+    return $?
+  }
+  [[ ! -e "$cache" && ! -L "$cache" ]] || return 1
+  if [[ "$CA_GITLAB_BASE" == /* ]]; then
+    target="${CA_GITLAB_BASE%/}/dot-github.git"
+    mkdir -- "$target" 2>/dev/null && git init -q --bare "$target" || return 1
+    target=$(archive_destination_key) || return 1
+  elif [[ "$CA_GITLAB_BASE" == https://* ]]; then
+    api=$(archive_gitlab_api) || return 1
+    local CA_GITLAB_API="$api" gitlab_group_id=""
+    gitlab_ensure_project dot-github && [[ "$gitlab_created" == 1 && "$gitlab_project_id" =~ ^[1-9][0-9]*$ ]] || return 1
+    gitlab_protect_branches dot-github "$gitlab_project_id" || return 1
+    target=$(archive_destination_key) && [[ "${target##*:}" == "$gitlab_project_id" ]] || return 1
+  else
+    return 1
+  fi
+  mkdir -- "$cache" && git init -q --bare "$cache" &&
+    git --git-dir="$cache" remote add github "$src" || return 1
+  claim=$(archive_claim_value "$source_key" "$cache" "$target") || return 1
+  state_write "$CA_STATE_DIR/.github.destination" "$claim" || return 1
+  result=ok:created
+}
+
+github_archive_recheck(){
+  [[ "$name" != .github ]] && return 0
+  if ! archive_check_claim "$source_key" "$1"; then
+    result=err:collision; error_reason='archive destination ownership changed'; return 1
+  fi
+}
+
 # Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
 # condition so a failure doesn't abort the whole pass.
 mirror_name(){
-  local name="$1" owner="${2:-}" src dst existing=0 ferr gl_name
+  local name="$1" owner="${2:-}" unchanged="${3:-0}" src dst existing=0 ferr gl_name source_key
+  local -a destination_git_options=()
   if gitlab_reserved "$name"; then
     result=err:collision; error_reason='reserved destination of .github'; return 1
   fi
@@ -248,6 +280,17 @@ mirror_name(){
   if [[ -n "$owner" ]]; then src="$(github_base_for "$owner")/$name.git"; else src="$CA_GITHUB_BASE/$name.git"; fi
   dst="$CA_REPOS_DIR/$name.git"
   result=ok; error_reason=""
+  if [[ "$name" == .github ]]; then
+    destination_git_options=(-c http.followRedirects=false)
+    if ! source_key=$(archive_source_key "$src") || ! github_archive_prepare "$src" "$dst"; then
+      result=err:collision; error_reason='archive destination ownership unverified'; return 1
+    fi
+    if (( unchanged )); then
+      align_github_remote "$name" "$owner"
+      result=skip:unchanged
+      return 0
+    fi
+  fi
   if [[ -d "$dst" ]]; then
     existing=1
     # U2: clean leaked credentials / mirror refspec from every remote of an existing copy.
@@ -348,7 +391,9 @@ mirror_name(){
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
   # U8a: push to GitLab without force; rejected refs are archived separately.
-  if [[ "$CA_GITLAB_BASE" == /* ]]; then
+  if [[ "$name" == .github ]]; then
+    gl_dest="${CA_GITLAB_BASE%/}/$gl_name.git"
+  elif [[ "$CA_GITLAB_BASE" == /* ]]; then
     # Local path mode: create bare repo if missing
     gl_path="$CA_GITLAB_BASE/$gl_name.git"
     if [[ ! -d "$gl_path" ]]; then
@@ -379,7 +424,8 @@ mirror_name(){
   # U8a: push all heads+tags without force; on a "not fast-forward" rejection
   # archive the rejected ref under rewritten/<ts>/<dest-name> and keep going.
   gl_push "$dst" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' || return 1
-  if ! gl_refs="$(timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" ls-remote --refs --heads --tags "$gl_dest" 2>&1)"; then
+  github_archive_recheck "$dst" || return 1
+  if ! gl_refs="$(timeout 60 git "${destination_git_options[@]}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" ls-remote --refs --heads --tags "$gl_dest" 2>&1)"; then
     result=err:gitlab; error_reason="$gl_refs"; return 1
   fi
   local -a missing=()
@@ -432,7 +478,8 @@ gl_push(){
   local line refspec ref_src ref_dest ref_category dest_name ts rewritten_ref retry_out retry_rc obj
   local rr rs retry_refs found gobj gref
   local -a rewritten_refs=()
-  push_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
+  github_archive_recheck "$repo" || return 1
+  push_out=$(timeout 1800 git "${destination_git_options[@]}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
   # U7f: a source ref vanished between composing the ref list and the push
   # ("error: src refspec <ref> does not match any"), e.g. ship deletes a merged
   # branch while pushing. Not a failure: re-push once against an explicit
@@ -442,7 +489,8 @@ gl_push(){
     for rs in "$@"; do
       while read -r rr; do retry_refs+=("$rr"); done < <(expand_refspec "$repo" "$rs")
     done
-    push_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "${retry_refs[@]}" 2>&1); push_rc=$?
+    github_archive_recheck "$repo" || return 1
+    push_out=$(timeout 1800 git "${destination_git_options[@]}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "${retry_refs[@]}" 2>&1); push_rc=$?
   fi
   # U7b: a rejected push whose barrier reports a leaked secret fails as err:secret.
   if [[ "$push_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$push_out"; return 1; fi
@@ -480,7 +528,8 @@ gl_push(){
     fi
     ts="$(date +%Y%m%d-%H%M%S)"
     rewritten_ref="refs/$ref_category/rewritten/$ts/$dest_name"
-    retry_out=$(timeout 1800 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
+    github_archive_recheck "$repo" || return 1
+    retry_out=$(timeout 1800 git "${destination_git_options[@]}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
     if [[ "$retry_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$retry_out"; return 1; fi
     printf '%s\n' "$retry_out" | mask
     if [[ "$retry_rc" != 0 ]]; then result="err:gitlab"; error_reason="$retry_out"; return 1; fi
@@ -598,13 +647,13 @@ protect_all(){
 # Mirror one name under a free-space floor `min` (KB); prints and logs its
 # journal line and bumps ok/err. On a successful mirror `result` is ok/ok:created.
 process_one(){
-  local name="$1" min="$2" owner="${3:-}" failed=0
+  local name="$1" min="$2" owner="${3:-}" unchanged="${4:-0}" failed=0
   mkdir -p "$CA_STATE_DIR"
   exec {lockfd}>"${CA_STATE_DIR}/$name.lock"
   flock "$lockfd"
   avail=$(df --output=avail -k "$CA_REPOS_DIR" 2>/dev/null | tail -n1 | tr -d '[:space:]' || true)
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail >= min )); then
-    if mirror_name "$name" "$owner"; then
+    if mirror_name "$name" "$owner" "$unchanged"; then
       case "$result" in
         skip:*) skipped=$((skipped+1));;
         *) ok=$((ok+1));;
@@ -732,14 +781,19 @@ if [[ "${1:-}" == "--changed" ]]; then
     fi
     seen_names[$name]=1
     [[ "$archived" == "true" ]] && { skipped=$((skipped+1)); continue; }
+    unchanged=0
     if [[ -d "$CA_REPOS_DIR/$name.git" ]] \
        && [[ -f "$CA_STATE_DIR/$name.pushed_at" ]] \
        && [[ "$(<"$CA_STATE_DIR/$name.pushed_at")" == "$pushed" ]]; then
-      align_github_remote "$name" "$owner"
-      skipped=$((skipped+1)); continue
+      if [[ "$name" == .github ]] || gitlab_reserved "$name"; then
+        unchanged=1
+      else
+        align_github_remote "$name" "$owner"
+        skipped=$((skipped+1)); continue
+      fi
     fi
     # D10: keep at least 2 GiB + this repo's size free before mirroring it.
-    process_one "$name" "$(( ${CA_FREE_MIN_KB:-2097152} + ${size:-0} ))" "$owner"
+    process_one "$name" "$(( ${CA_FREE_MIN_KB:-2097152} + ${size:-0} ))" "$owner" "$unchanged"
     if [[ "$result" == ok* ]]; then
       state_write "$CA_STATE_DIR/$name.pushed_at" "$pushed"
     fi
