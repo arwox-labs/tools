@@ -404,7 +404,7 @@ check ladder_two_only '[[ $rc == 0 ]] && jq -e "$ladder_jq" "$root/config/code-c
 mcp_jq='(.mcp // {}) as $m | ((["codebase-memory-mcp","context7","repowise","vibecode"] - ($m | keys)) | length == 0) and ($m | all(.[]; .enabled == false))'
 check go_no_mcp '[[ $rc == 0 ]] && jq -e "$mcp_jq" "$root/config/opencode-channel.json" >/dev/null' \
   jq -e . "$root/config/opencode-channel.json"
-ext_jq='(.permission.external_directory["/tmp/**"] == "allow") and (.permission.external_directory["*"] == "allow")'
+ext_jq='(.permission.external_directory["/tmp/**"] == "allow") and (.permission.external_directory["*"] == "deny")'
 check go_tmp_write_allow '[[ $rc == 0 ]] && jq -e "$ext_jq" "$root/config/opencode-channel.json" >/dev/null' \
   jq -e . "$root/config/opencode-channel.json"
 lean_jq='(.snapshot == false) and (.lsp == false) and (.autoupdate == false)'
