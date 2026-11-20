@@ -4,7 +4,7 @@ set -u
 usage() {
   printf '%s\n' \
     'usage: channel-canary [<project>]' \
-    'confirms the active code channel: read-only canary TZ through `code-channel audit`, at most 2 runs'
+    'confirms the active code channel: read-only canary TZ through `code-agent audit`, at most 2 runs'
 }
 
 case ${1:-} in
@@ -13,7 +13,7 @@ esac
 if [[ $# -gt 1 || ${1:-} == -* ]]; then usage >&2; exit 2; fi
 
 project=${1:-/root/workspaces/tools}
-cc=${CODE_CHANNEL:-/root/workspaces/tools/bin/code-channel}
+cc=${CODE_AGENT:-/root/workspaces/tools/bin/code-agent}
 
 tmpdir=$(mktemp -d /tmp/channel-canary.XXXXXX) || exit 1
 tz=$tmpdir/canary.md

@@ -81,7 +81,7 @@ run_hook "$(jq -c '.cwd = "/root/workspaces/projects/incidents" | .agent_id = "s
 
 run_hook "$(jq -c '.cwd = "/root/workspaces/projects/incidents" | .stop_hook_active = true' <<<"$p_base")"; judge 'stop_hook_active -> no output' no "$out"
 
-helpers='[{"command":"/root/workspaces/tools/bin/code-channel run x","description":"helper 1"},{"command":"/root/workspaces/tools/bin/code-channel run y","description":"helper 2"}]'
+helpers='[{"command":"/root/workspaces/tools/bin/code-agent run x","description":"helper 1"},{"command":"/root/workspaces/tools/bin/code-agent run y","description":"helper 2"}]'
 run_hook "$(jq -c --argjson bg "$helpers" '.cwd = "/root/workspaces/projects/incidents" | .background_tasks = $bg' <<<"$p_base")"; judge 'incidents, 2 helpers -> no output' no "$out"
 
 cg=$(awk '/^0::/{sub(/^0::/,"");print;exit}' /proc/self/cgroup)

@@ -5,18 +5,18 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=285
+total=287
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
 
-cat > "$d/code-channel" <<'STUB'
+cat > "$d/code-agent" <<'STUB'
 #!/usr/bin/env bash
 [[ ${1:-} == --plan ]] || exit 1
 echo 'stub-channel - audit=stub'
 echo 'second line ignored'
 STUB
-chmod 755 "$d/code-channel"
+chmod 755 "$d/code-agent"
 
 cat > "$d/helper-share" <<'STUB'
 #!/usr/bin/env bash
@@ -77,7 +77,7 @@ mk_stop() {
     '{hook_event_name:"Stop",transcript_path:$tp} + (if $sid == "" then {} else {session_id:$sid} end)'
 }
 run_hook() {
-  LEAD_HINT_STRICT=1 CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"
+  LEAD_HINT_STRICT=1 CODE_CHANNEL="$d/code-agent" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"
 }
 ctx_of() {
   jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$1" 2>/dev/null
@@ -157,7 +157,7 @@ else
 fi
 
 tx9=$d/tx9.jsonl
-{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash 'bin/code-channel audit proj tz.md'; mk_read; } >"$tx9"
+{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash 'bin/code-agent audit proj tz.md'; mk_read; } >"$tx9"
 out=$(mk_pre "$tx9" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
 if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 9: helper run resets count -> empty'; ok=$((ok+1))
@@ -172,7 +172,7 @@ else
   echo "FAIL 10: rc=$rc out=$out"
 fi
 
-out=$(mk_pre "$tx1" Read '{"file_path":"/tmp/x"}' | CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" LEAD_HINT_STRICT=0 "$dir/lead-hint"); rc=$?
+out=$(mk_pre "$tx1" Read '{"file_path":"/tmp/x"}' | CODE_CHANNEL="$d/code-agent" HELPER_SHARE="$d/helper-share" LEAD_HINT_STRICT=0 "$dir/lead-hint"); rc=$?
 if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 11: LEAD_HINT_STRICT=0 -> empty'; ok=$((ok+1))
 else
@@ -592,15 +592,15 @@ fi
 
 tx51=$d/tx51.jsonl
 { mk_user; for _ in $(seq 9); do mk_read; done; } >"$tx51"
-out=$(mk_pre "$tx51" Bash '{"command":"code-channel audit /x /x/tz.md","run_in_background":true}' | run_hook); rc=$?
+out=$(mk_pre "$tx51" Bash '{"command":"code-agent audit /x /x/tz.md","run_in_background":true}' | run_hook); rc=$?
 if [[ $rc == 0 && -z $out ]]; then
-  echo 'PASS 51: 9 counted then code-channel launch -> allowed'; ok=$((ok+1))
+  echo 'PASS 51: 9 counted then code-agent launch -> allowed'; ok=$((ok+1))
 else
   echo "FAIL 51: rc=$rc out=$out"
 fi
 
 tx52=$d/tx52.jsonl
-{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash 'LEAD_HINT_MAX=8 /root/workspaces/tools/bin/code-channel auto x x/tz.md'; } >"$tx52"
+{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash 'LEAD_HINT_MAX=8 /root/workspaces/tools/bin/code-agent auto x x/tz.md'; } >"$tx52"
 out=$(mk_pre "$tx52" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
 if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 52: helper launch in transcript resets window -> empty'; ok=$((ok+1))
@@ -609,7 +609,7 @@ else
 fi
 
 tx53=$d/tx53.jsonl
-{ mk_user; for _ in $(seq 8); do mk_read; done; mk_bash2 'code-channel audit a a/tz.md' 'code-channel audit b b/tz.md'; } >"$tx53"
+{ mk_user; for _ in $(seq 8); do mk_read; done; mk_bash2 'code-agent audit a a/tz.md' 'code-agent audit b b/tz.md'; } >"$tx53"
 out=$(jq -cn --arg tp "$tx53" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
 ctx=$(ctx_of "$out")
 if [[ $rc == 0 && $ctx != *"of 8"* ]]; then
@@ -692,8 +692,8 @@ else
 fi
 
 tx61=$d/tx61.jsonl
-{ mk_user; mk_bash 'code-channel audit a a/tz.md'; } >"$tx61"
-out=$(jq -cn --arg tp "$tx61" '{hook_event_name:"PostToolUse",transcript_path:$tp,tool_name:"Bash",tool_input:{command:"code-channel audit a a/tz.md"}}' | run_hook); rc=$?
+{ mk_user; mk_bash 'code-agent audit a a/tz.md'; } >"$tx61"
+out=$(jq -cn --arg tp "$tx61" '{hook_event_name:"PostToolUse",transcript_path:$tp,tool_name:"Bash",tool_input:{command:"code-agent audit a a/tz.md"}}' | run_hook); rc=$?
 ctx=$(ctx_of "$out")
 if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 61: lone helper launch -> no nudge (aeaa650)'; ok=$((ok+1))
@@ -702,8 +702,8 @@ else
 fi
 
 tx62=$d/tx62.jsonl
-{ mk_user; mk_bash2 'code-channel audit a a/tz.md' 'code-channel audit b b/tz.md'; } >"$tx62"
-out=$(jq -cn --arg tp "$tx62" '{hook_event_name:"PostToolUse",transcript_path:$tp,tool_name:"Bash",tool_input:{command:"code-channel audit a a/tz.md"}}' | run_hook); rc=$?
+{ mk_user; mk_bash2 'code-agent audit a a/tz.md' 'code-agent audit b b/tz.md'; } >"$tx62"
+out=$(jq -cn --arg tp "$tx62" '{hook_event_name:"PostToolUse",transcript_path:$tp,tool_name:"Bash",tool_input:{command:"code-agent audit a a/tz.md"}}' | run_hook); rc=$?
 ctx=$(ctx_of "$out")
 if [[ $rc == 0 && $ctx != *"1 helper stream"* ]]; then
   echo 'PASS 62: two helper launches -> no nudge'; ok=$((ok+1))
@@ -840,11 +840,11 @@ codelock_case 97 'codelock deny non-object tool_input' deny \
 notp_case 98 'codelock deny agent Write x.py without transcript_path, bd []' deny /root/workspaces/tools/x.py sub
 
 tx87=$d/tx87.jsonl
-{ mk_user; for _ in $(seq 8); do mk_bash 'tail /tmp/x/code-channel.out'; done; } >"$tx87"
+{ mk_user; for _ in $(seq 8); do mk_bash 'tail /tmp/x/code-agent.out'; done; } >"$tx87"
 out=$(mk_pre "$tx87" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
 dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
 if [[ $rc == 0 && -z $out ]]; then
-  echo 'PASS 87: tail code-channel.out -> no counter deny (aeaa650)'; ok=$((ok+1))
+  echo 'PASS 87: tail code-agent.out -> no counter deny (aeaa650)'; ok=$((ok+1))
 else
   echo "FAIL 87: rc=$rc out=$out"
 fi
@@ -870,10 +870,10 @@ else
 fi
 
 tx90=$d/tx90.jsonl
-{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash '/root/workspaces/tools/bin/code-channel audit /tmp/a /tmp/t.md'; } >"$tx90"
+{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash '/root/workspaces/tools/bin/code-agent audit /tmp/a /tmp/t.md'; } >"$tx90"
 out=$(mk_pre "$tx90" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
 if [[ $rc == 0 && -z $out ]]; then
-  echo 'PASS 90: absolute code-channel path IS a helper run -> allow'; ok=$((ok+1))
+  echo 'PASS 90: absolute code-agent path IS a helper run -> allow'; ok=$((ok+1))
 else
   echo "FAIL 90: rc=$rc out=$out"
 fi
@@ -948,7 +948,7 @@ hard_case 119 lead_var_bash_denied deny 'FOO=1 bash /root/workspaces/projects/x.
 hard_case 120 lead_cd_bash_denied deny 'cd /root/workspaces/projects && python3 x.py' false /tmp
 
 out=$(jq -cn --arg cwd /tmp \
-  '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:"code-channel audit /x /y",run_in_background:false}}' | run_hook); rc=$?
+  '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:"code-agent audit /x /y",run_in_background:false}}' | run_hook); rc=$?
 dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
 reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
 if [[ $rc == 0 && $dec == deny && $reason == *"run it in background"* ]]; then
@@ -956,7 +956,7 @@ if [[ $rc == 0 && $dec == deny && $reason == *"run it in background"* ]]; then
 else
   echo "FAIL 121: rc=$rc out=$out"
 fi
-hard_case 122 channel_background_allowed allow 'code-channel audit /x /y' true /tmp
+hard_case 122 channel_background_allowed allow 'code-agent audit /x /y' true /tmp
 
 hard_case 123 allow_bd allow 'bd show x' false /tmp
 hard_case 124 allow_goal_check allow '/root/workspaces/tools/bin/goal-check dcfg-x' false /tmp
@@ -1011,8 +1011,8 @@ hard_case 170 lead_allow_git_branch allow 'git branch --list' false /tmp
 hard_case 171 lead_allow_gh_pr_list allow 'gh pr list' false /tmp
 hard_case 172 lead_allow_gh_pr_diff allow 'gh pr diff 1' false /tmp
 hard_case 173 lead_allow_channel_canary allow 'channel-canary' false /tmp
-hard_case 174 lead_allow_where allow 'where code-channel' false /tmp
-hard_case 175 lead_allow_code_channel_background allow 'code-channel audit /x /y' true /tmp
+hard_case 174 lead_allow_where allow 'where code-agent' false /tmp
+hard_case 175 lead_allow_code_channel_background allow 'code-agent audit /x /y' true /tmp
 hard_case 176 lead_allow_cut allow 'cut -d: -f1 /tmp/f' false /tmp
 hard_case 177 lead_allow_sort allow 'sort /tmp/f' false /tmp
 hard_case 178 lead_allow_uniq allow 'uniq /tmp/f' false /tmp
@@ -1093,7 +1093,7 @@ else
 fi
 hard_case 227 lead_backslash_quote_denied deny 'echo hi \" ; git commit -m x' false /tmp
 hard_case 228 lead_find_escaped_exec_denied deny 'find /tmp -ex\ec git commit -m x \;' false /tmp
-hard_case 229 lead_git_output_denied deny 'git log -1 --format=x --output=/root/workspaces/tools/state/code-channel/permit.json' false /tmp
+hard_case 229 lead_git_output_denied deny 'git log -1 --format=x --output=/root/workspaces/tools/state/code-agent/permit.json' false /tmp
 hard_case 230 lead_sort_o_denied deny 'sort -o /root/workspaces/projects/x /tmp/f' false /tmp
 hard_case 231 lead_uniq_out_denied deny 'uniq /tmp/f /root/workspaces/projects/x' false /tmp
 hard_case 232 lead_find_fls_denied deny 'find /tmp -fls /root/workspaces/projects/x' false /tmp
@@ -1106,17 +1106,19 @@ hard_case 241 lead_allow_git_C_fetch allow 'git -C /x fetch -q origin main' fals
 hard_case 242 lead_git_C_push_denied deny 'git -C /x push origin main' false /tmp
 hard_case 243 lead_git_gitdir_commit_denied deny 'git --git-dir=/y commit -m x' false /tmp
 hard_case 244 lead_git_C_reset_denied deny 'git -C /x reset --hard' false /tmp
-hard_case 245 lead_allow_channel_help_foreground allow 'code-channel --help' false /tmp
-hard_case 246 lead_allow_channel_h_foreground allow 'code-channel -h' false /tmp
-hard_case 247 lead_allow_channel_plan_foreground allow 'code-channel --plan' false /tmp
+hard_case 245 lead_allow_channel_help_foreground allow 'code-agent --help' false /tmp
+hard_case 246 lead_allow_channel_h_foreground allow 'code-agent -h' false /tmp
+hard_case 247 lead_allow_channel_plan_foreground allow 'code-agent --plan' false /tmp
 hard_case 248 lead_allow_code_agent_plan_foreground allow 'code-agent --plan' false /tmp
 hard_case 257 lead_allow_code_agent_help_foreground allow 'code-agent --help' false /tmp
-hard_case 249 lead_channel_auto_foreground_denied deny 'code-channel auto /x /y/tz.md' false /tmp
-hard_case 250 lead_channel_audit_foreground_denied deny 'code-channel audit /x /y/tz.md' false /tmp
+hard_case 249 lead_channel_auto_foreground_denied deny 'code-agent auto /x /y/tz.md' false /tmp
+hard_case 250 lead_channel_audit_foreground_denied deny 'code-agent audit /x /y/tz.md' false /tmp
 hard_case 255 lead_code_agent_auto_foreground_denied deny 'code-agent auto /x /y/tz.md' false /tmp
 hard_case 256 lead_code_agent_audit_foreground_denied deny 'code-agent audit /x /y/tz.md' false /tmp
 hard_case 258 lead_code_agent_auto_background_allowed allow 'code-agent auto /x /y/tz.md' true /tmp
-hard_case 259 lead_code_channel_auto_background_allowed allow 'code-channel auto /x /y/tz.md' true /tmp
+hard_case 268 lead_retired_code_channel_background_denied deny 'code-channel audit /x /y/tz.md' true /tmp
+hard_case 269 lead_retired_code_channel_help_denied deny 'code-channel --help' false /tmp
+hard_case 259 lead_code_channel_auto_background_allowed allow 'code-agent auto /x /y/tz.md' true /tmp
 
 hard_case 251 lead_allow_git_C_log allow 'git -C /root/workspaces/tools log -1 --oneline' false /tmp
 hard_case 252 lead_allow_git_gitdir_show allow 'git --git-dir=/root/workspaces/tools/.git show HEAD' false /tmp
@@ -1133,8 +1135,8 @@ hard_case 262 lead_disk_rotate_denied deny '/root/workspaces/tools/scripts/disk-
 
 hard_case 263 lead_allow_git_ls_tree allow 'git ls-tree HEAD' false /tmp
 hard_case 264 lead_comm_allowed allow 'comm /tmp/a /tmp/b' false /tmp
-hard_case 265 lead_allow_channel_use_foreground allow 'code-channel use /root/workspaces/tools' false /tmp
-hard_case 266 lead_channel_start_foreground_denied deny 'code-channel run /x /y' false /tmp
+hard_case 265 lead_allow_channel_use_foreground allow 'code-agent use /root/workspaces/tools' false /tmp
+hard_case 266 lead_channel_start_foreground_denied deny 'code-agent run /x /y' false /tmp
 hard_case 267 lead_allow_worktree_add_ref allow 'git worktree add /tmp/wt origin/main' false /tmp
 
 out=$(jq -cn --arg cwd /tmp \
@@ -1213,7 +1215,7 @@ echo "code-lock-path ok=$pt_ok failed=$pt_fail"
 
 tx_strict=$d/txstrict.jsonl
 { mk_user; for _ in $(seq 9); do mk_read; done; } >"$tx_strict"
-out=$(mk_pre "$tx_strict" Read '{"file_path":"/tmp/x"}' | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
+out=$(mk_pre "$tx_strict" Read '{"file_path":"/tmp/x"}' | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-agent" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
 dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
 if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 237: strict_default_on 9 calls -> no counter deny (aeaa650)'; ok=$((ok+1))
@@ -1221,7 +1223,7 @@ else
   echo "FAIL 237: rc=$rc out=$out"
 fi
 
-out=$(mk_pre "$tx_strict" Read '{"file_path":"/tmp/x"}' | LEAD_HINT_STRICT=1 CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
+out=$(mk_pre "$tx_strict" Read '{"file_path":"/tmp/x"}' | LEAD_HINT_STRICT=1 CODE_CHANNEL="$d/code-agent" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
 dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
 reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
 if [[ $rc == 0 && -z $out ]]; then
@@ -1235,7 +1237,7 @@ default_case() {
   out=$(jq -cn --arg cwd "$cwd" --arg cmd "$cmd" \
     '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:$cmd}}' \
     | jq -c --arg a "$agent" 'if $a == "" then . else .agent_id = $a end' \
-    | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
+    | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-agent" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
   dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
   if [[ $rc == 0 && $want == deny && $dec == deny ]] || [[ $rc == 0 && $want == allow && -z $out ]]; then
     echo "PASS $name"; ok=$((ok+1))

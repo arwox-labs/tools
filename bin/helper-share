@@ -9,7 +9,7 @@ usage: bin/helper-share --session <file.jsonl> | --days N [--help]
 Print the helper share of a Claude Code main session (sidechains excluded).
   H = Bash call whose command starts with a helper launch: optional env
       assignments / command / exec / env / nohup, then code-agent,
-      code-channel or a path ending in /bin/code-agent or /bin/code-channel
+      code-agent or a historical code-channel command/path
   L = Read/Grep/Glob/WebFetch/WebSearch, code-file Edit/Write, or Bash
       starting with grep rg find ls cat head tail sed wc
 Output: helper-share: <pct>% helpers=<H> lead=<L>  (pct rounded down)
