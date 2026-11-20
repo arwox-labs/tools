@@ -15,6 +15,8 @@ if ! [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
       fi
     done
   fi
+  archive_script="$(readlink -f -- "${BASH_SOURCE[0]}")" || exit 1
+  source "${archive_script%/*}/code-archive-refs" || exit 1
 fi
 CA_ENV_FILE="${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}"
 set -a; . "$CA_ENV_FILE"; set +a
@@ -234,22 +236,6 @@ gitlab_protect_branches(){
   fi
   rm -f "$body"; result=err:gitlab; error_reason="protect http=$code"; return 1
 }
-# The dated rewritten namespace written on a rejected ref is
-# refs/<kind>/rewritten/YYYYMMDD-HHMMSS/<full leaf>, where the timestamp is
-# exactly `date +%Y%m%d-%H%M%S` (8 digits, a dash, 6 digits) and the leaf keeps
-# every component of the source ref (a nested branch keeps its slash). Sets
-# $rl_leaf and returns 0 only for that exact shape, so an arbitrary dated
-# segment, a sibling archive name or a stray slash cannot stand in for it.
-rewritten_leaf(){
-  local rest ts
-  rest="${1#"refs/$2/rewritten/"}"
-  rl_leaf=""
-  [[ "$rest" == "$1" ]] && return 1
-  ts="${rest%%/*}"
-  [[ "$rest" == */* && "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]] || return 1
-  rl_leaf="${rest#*/}"
-  [[ -n "$rl_leaf" ]]
-}
 # Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
 # condition so a failure doesn't abort the whole pass.
@@ -396,25 +382,8 @@ mirror_name(){
   if ! gl_refs="$(timeout 60 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" ls-remote --refs --heads --tags "$gl_dest" 2>&1)"; then
     result=err:gitlab; error_reason="$gl_refs"; return 1
   fi
-  # A ref counts as copied only as its exact name with its exact OID, or under
-  # the documented dated rewritten namespace of the same kind and full leaf
-  # (refs/<kind>/rewritten/<ts>/<leaf>). A sibling ref or an unrelated archive
-  # name holding that object cannot stand in for it.
-  local -A gl_exact=() gl_rewritten=()
-  local gobj gref gkind
-  while read -r gobj gref; do
-    [[ -n "$gref" ]] || continue
-    gl_exact["$gref $gobj"]=1
-    gkind="${gref#refs/}"; gkind="${gkind%%/*}"
-    if rewritten_leaf "$gref" "$gkind"; then gl_rewritten["$gkind $gobj $rl_leaf"]=1; fi
-  done <<<"$gl_refs"
-  missing=()
-  while read -r ref obj; do
-    [[ -n "$ref" ]] || continue
-    kind="${ref#refs/}"; kind="${kind%%/*}"; leaf="${ref#"refs/$kind/"}"
-    [[ -n "${gl_exact[$ref $obj]:-}" || -n "${gl_rewritten[$kind $obj $leaf]:-}" ]] && continue
-    missing+=("$ref")
-  done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags)
+  local -a missing=()
+  archive_missing_refs "$dst" "$gl_refs" missing
   if (( ${#missing[@]} )); then
     result=err:incomplete; error_reason="${#missing[@]} missing"; return 1
   fi

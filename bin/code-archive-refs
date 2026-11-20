@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Rejected refs use refs/<kind>/rewritten/YYYYMMDD-HHMMSS/<full leaf>.
+# Set rl_leaf only for that shape, preserving nested names.
+rewritten_leaf(){
+  local rest ts
+  rest="${1#"refs/$2/rewritten/"}"
+  rl_leaf=""
+  [[ "$rest" == "$1" ]] && return 1
+  ts="${rest%%/*}"
+  [[ "$rest" == */* && "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]] || return 1
+  rl_leaf="${rest#*/}"
+  [[ -n "$rl_leaf" ]]
+}
+
+# An exact ref or its dated rewritten counterpart must hold the expected OID.
+archive_missing_refs(){
+  local repo="$1" remote_refs="$2"
+  local -n missing_refs="$3"
+  local -A exact=() rewritten=()
+  local obj ref kind leaf rl_leaf
+  while read -r obj ref; do
+    [[ -n "$ref" ]] || continue
+    exact["$ref $obj"]=1
+    kind="${ref#refs/}"; kind="${kind%%/*}"
+    if rewritten_leaf "$ref" "$kind"; then rewritten["$kind $obj $rl_leaf"]=1; fi
+  done <<<"$remote_refs"
+  while read -r ref obj; do
+    [[ -n "$ref" ]] || continue
+    kind="${ref#refs/}"; kind="${kind%%/*}"; leaf="${ref#"refs/$kind/"}"
+    [[ -n "${exact[$ref $obj]:-}" || -n "${rewritten[$kind $obj $leaf]:-}" ]] && continue
+    missing_refs+=("$ref")
+  done < <(git --git-dir="$repo" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags)
+}
