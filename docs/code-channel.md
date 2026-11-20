@@ -4,31 +4,22 @@
 
 ## Вызов
 
-- `bin/code-channel auto <проект> <ТЗ-файл>` — активный воркер, при доказанном сбое провайдера — один переход к другому.
+- `bin/code-channel auto <проект> <ТЗ-файл>` — активный воркер.
 - `bin/code-channel audit <проект> <ТЗ-файл>` — аудит без изменений на активном воркере.
-- `bin/code-channel <go|sdk> <проект> <ТЗ-файл> [--model <m>]` — явный воркер без failover.
-- `bin/code-channel use <go|sdk> "<цитата владельца>"` — мгновенное переключение активного воркера: пишет `state/code-channel/active` и `use.log`, без правки конфига.
-- `bin/code-channel --plan` печатает `<id> <model>` активного воркера, например `go opencode-go/longcat-2.5-free`.
-- `bin/code-channel --help` — справка, включая пути к конфигу, permit и этой странице.
+- `bin/code-channel go <проект> <ТЗ-файл> [--model <m>]` — явный воркер без failover.
+- `bin/code-channel use go "<цитата владельца>"` — выбор активного воркера: пишет `state/code-channel/active` и `use.log`, без правки конфига.
+- `bin/code-channel --plan` печатает `<id> <model>` активного воркера для задач разработки.
+- `bin/code-channel --help` — справка, включая путь к конфигу и этой странице.
 
 ## Воркеры
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `go` | enabled, active (owner 26.10) | OpenCode CLI; free `opencode-go/longcat-2.5-free` for code, audit and session continuation; no automatic paid Go fallback |
-| `sdk` | включён | SDK-воркер: `bin/sdk-agent code` (audit: `sdk-agent read`), модель `claude-haiku-5-5`; бюджет 0.50 USD за прогон (потолок 2.00), общий дневной cap 22.00 USD (`/root/CLAUDE.md`) |
+| `go` | enabled, active | OpenCode CLI. Модель разработки показывает `--plan`, для аудита действует параметр `audit_model` |
 
-Других воркеров в лестнице нет. Лестница — ровно `go`, `sdk`, обе записи `enabled: true`.
+## Сбой исполнителя
 
-## Failover по доказательствам
-
-Слово владельца переключает активного воркера мгновенно; автоматического переключения по кругу нет. Сбой провайдера даёт доказательство: rc 124, строка `Upstream request failed:`, `channel-canary: down` или истёкшее время прогона (`CC_EVIDENCE_SECONDS`, по умолчанию 30 с). Только по доказательству `auto` вызывает другого воркера ровно один раз за направление (go→sdk или sdk→go). Без доказательства канал выходит с сырым rc и никого не переключает. Если упали оба, канал пишет permit и выходит с rc 32:
-
-```json
-{"rc":32,"go_rc":N,"sdk_rc":N,"stderr":["..."],"canary":"channel-canary: down","ts":1700000000}
-```
-
-Permit: `state/code-channel/permit.json`, путь переопределяется `CODE_CHANNEL_PERMIT`. «Ключи выдаются по доказательствам»: без permit и доказательств ключ другого воркера не выдаётся.
+Канал запускает активную модель из `config/code-channel.json`. При ошибке провайдера используйте stderr и журнал запуска. Повтор и переход на настроенную запасную модель зависят от параметров OpenCode. Ошибка возвращается вызывающему процессу.
 
 ## Parallel runs
 
@@ -36,12 +27,12 @@ Permit: `state/code-channel/permit.json`, путь переопределяет�
 
 ## Конфиг
 
-`config/code-channel.json` stores `id`, `enabled`, `model`, `resume_model`/`audit_model` (equal to `model`), optional `allowed_models`, and `fallback_model` (empty for go); array order defines the ladder. The default changes only on owner instruction. Explicit `go --model <provider/model>` accepts the default or an approved `allowed_models` entry: `opencode-go/longcat-2.5-free`, `opencode/longcat-2.5-free`, `bitrixgpt/bitrix/bitrixgpt-5.6-agent`, or `bitrixgpt/bitrix/bitrixgpt-6.0-agent`. The SDK route is unchanged. `config/opencode-channel.json` добавляет агента `developer` (mode `primary`, TDD, правки только в `FILE:` ТЗ) и `audit`; go-код запускается с `--agent developer`, аудит — с `--agent audit`.
+`config/code-channel.json` stores `id`, `enabled`, `model`, optional `resume_model`/`audit_model`, optional `allowed_models`, and `fallback_model`; array order defines the ladder. Use `code-channel --plan` for the configured development model and `audit_model` for audit. The default changes only on owner instruction. Explicit `go --model <provider/model>` accepts the configured default or a configured `allowed_models` entry. `config/opencode-channel.json` adds `developer` (mode `primary`, TDD, edits only `FILE:` task lines) and `audit`; code runs with `--agent developer`, audits with `--agent audit`.
 
-Промпты `developer` и `audit` не копируют запреты, а ссылаются на единственный источник `sdk-agent/system-prompt.md`:
+Prompts `developer` and `audit` use `config/code-channel-system-prompt.md`:
 
 ```json
-"prompt": "{file:../sdk-agent/system-prompt.md}"
+"prompt": "{file:./code-channel-system-prompt.md}"
 ```
 
 Документация OpenCode:
@@ -49,7 +40,7 @@ Permit: `state/code-channel/permit.json`, путь переопределяет�
 - «Specify a custom system prompt file for this agent with the `prompt` config. The prompt file should contain instructions specific to the agent’s purpose.» — <https://opencode.ai/docs/agents/#prompt>.
 - «This path is relative to where the config file is located. So this works for both the global OpenCode config and the project specific config.» — <https://opencode.ai/docs/agents/#prompt>.
 
-Путь `../sdk-agent/system-prompt.md` считается от `config/opencode-channel.json`, поэтому Go-воркер в коде и аудите получает те же System bans, Secrets и Deletion (`rm -rf`, `safe-delete`), что и SDK-воркер. Верхнеуровневый `instructions` (<https://opencode.ai/docs/rules/#using-opencodejson>; «The recommended approach is to use the `instructions` field in `opencode.json`») добавляет файл всем агентам и считается от другого каталога, а `prompt` — только агентам Go-воркера и от каталога конфига, поэтому выбран `prompt`.
+The path is relative to `config/opencode-channel.json`. The worker gets the shared system bans, secrets, and deletion rules. OpenCode's top-level `instructions` applies to all agents, while `prompt` is scoped to these channel agents.
 
 ## MCP
 
@@ -72,10 +63,10 @@ OPENCODE_CONFIG=config/opencode-channel.json opencode mcp list
 Go-запуск не тратит время на то, что воркеру не нужно:
 
 - `config/opencode-channel.json` выключает `snapshot`, `lsp` и `autoupdate` (`false`). Snapshots — undo для TUI; воркер коммитит обычным git. LSP и проверка обновлений в неинтерактивном прогоне не нужны.
-- The invocation uses `opencode --standalone run …` without external plugins.
+- Для TeamoRouter обёртка передаёт OpenCode флаг `--standalone`.
 - OpenCode 2.2.7 session reconciliation reads `session_v2` (`model.providerID` and `model.id`), including resume-session lookup.
 - Только для процесса opencode заданы `OPENCODE_DISABLE_MODELS_FETCH=1` и `OPENCODE_DISABLE_AUTOUPDATE=1`, поэтому список моделей и обновления не тянутся из сети.
-- `OPENCODE_DISABLE_CLAUDE_CODE` не ставится: запреты `/root/CLAUDE.md` (System bans, Secrets, Deletion) уже приходят в промпт `developer` из `sdk-agent/system-prompt.md`, а `.claude` оставлен ради глобальных правил и навыков.
+- `OPENCODE_DISABLE_CLAUDE_CODE` is not set. The shared prompt provides system bans, secrets, and deletion rules, while `.claude` remains available for global rules and skills.
 
 ## Коды выхода
 
@@ -93,16 +84,15 @@ Go-запуск не тратит время на то, что воркеру н
 | 29 | TZ `Test:` line STALLED in test-once |
 | 30 | рекурсия |
 | 31 | TZ `Test:` line failed after the helper |
-| 32 | обе формы упали по доказательствам; см. permit |
 | 124 | таймаут самого исполнителя (канал своих таймеров не ставит, owner 12.10) |
 
 Где значение кода не описано выше, используйте только номер и `см. stderr`.
 
 ## Рекурсия и журнал
 
-Внутри исполнителя задан `CODE_CHANNEL_ACTIVE`: любой вызов канала — exit 30. При ошибке не повторяйте канал: прочитайте stderr и permit, исправьте причину, затем один повтор. Исполнитель режимов `auto|audit` не делает git add/commit: локальный коммит, push и PR делает `code-channel delivery <worktree> <ТЗ>` (ship-post закрыт 22.10).
+Внутри исполнителя задан `CODE_CHANNEL_ACTIVE`: любой вызов канала — exit 30. При ошибке не повторяйте канал: прочитайте stderr и журнал, исправьте причину, затем следуйте лимитам повторов из текущего плана. Исполнитель режимов `auto|audit` не делает git add/commit: доставку выполняет `code-channel delivery <worktree> <ТЗ>`.
 
-Журнал: `state/code-channel/runs.jsonl` — поля `provider_expected`, `provider_actual`, `model_actual`, `rc`, `retries`, `session`. Permit: `state/code-channel/permit.json` — доказательства обоих воркеров для решения ведущего.
+Журнал: `state/code-channel/runs.jsonl` — поля `provider_expected`, `provider_actual`, `model_actual`, `rc`, `retries`, `session`.
 
 ## Пролонгация
 

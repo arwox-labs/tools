@@ -2,14 +2,13 @@
 set -u
 
 dir=$(cd -- "$(dirname -- "$0")" && pwd)
-d=$(mktemp -d)
+d=$(mktemp -d "${TMPDIR:-/tmp}/goal-gate-test.XXXXXX")
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=14
+total=9
 
 printf '%s\n' '{"message":"<command-name>/goal_task</command-name>"}' >"$d/goal.jsonl"
 
-export GOAL_GATE_PERMIT="$d/permit.json"
 
 stop() { # sid msg [transcript]
   local t=${3:-$d/goal.jsonl}
@@ -47,54 +46,16 @@ if [[ -z $out ]]; then
   echo 'PASS 13 code_not_status'; ok=$((ok+1))
 else echo "FAIL 13 code_not_status: $out"; fi
 
-permit_ok() {
-  jq -nc --argjson ts "$(date +%s)" --arg w "$d" --arg t "$d/goal.jsonl" \
-    '{rc:32,go_rc:1,sdk_rc:1,stderr:["code-channel: rc=32"],canary:"channel-canary",ts:$ts,worktree:$w,tz:$t}' >"$d/permit.json"
-}
 agent_in() {
   jq -nc --arg m "$1" '{hook_event_name:"PreToolUse",tool_name:"Agent",tool_input:{model:$m,subagent_type:"general-purpose"}}'
 }
 
-permit_ok
-out=$(agent_in haiku | "$dir/goal-gate"); rc=$?
-if [[ $rc == 0 && -z $out ]]; then
-  echo 'PASS 15 haiku_fallback_allowed'; ok=$((ok+1))
-else echo "FAIL 15 haiku_fallback_allowed: rc=$rc out=$out"; fi
-
-rm -f "$d/permit.json"
-out=$(agent_in haiku | "$dir/goal-gate"); rc=$?
-if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1 &&
-  jq -e --arg p "$d/permit.json" '.hookSpecificOutput.permissionDecisionReason | contains($p)' <<<"$out" >/dev/null 2>&1; then
-  echo 'PASS 16 agent_denied_without_marker'; ok=$((ok+1))
-else echo "FAIL 16 agent_denied_without_marker: rc=$rc out=$out"; fi
-
-permit_ok
-out=$(agent_in sonnet | "$dir/goal-gate"); rc=$?
-if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1; then
-  echo 'PASS 17 agent_sonnet_denied'; ok=$((ok+1))
-else echo "FAIL 17 agent_sonnet_denied: rc=$rc out=$out"; fi
-
-jq -nc --argjson ts "$(( $(date +%s) - 3600 ))" --arg w "$d" --arg t "$d/goal.jsonl" \
-  '{rc:32,go_rc:1,sdk_rc:1,stderr:["old"],canary:"channel-canary",ts:$ts,worktree:$w,tz:$t}' >"$d/permit.json"
-out=$(agent_in haiku | "$dir/goal-gate"); rc=$?
-if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1 &&
-  jq -e --arg p "$d/permit.json" '.hookSpecificOutput.permissionDecisionReason | contains($p)' <<<"$out" >/dev/null 2>&1; then
-  echo 'PASS 18 stale_permit_denied'; ok=$((ok+1))
-else echo "FAIL 18 stale_permit_denied: rc=$rc out=$out"; fi
-
-jq -nc --argjson ts "$(date +%s)" --arg w "$d" --arg t "$d/goal.jsonl" \
-  '{rc:32,go_rc:0,sdk_rc:0,stderr:["code-channel: rc=32"],canary:"channel-canary",ts:$ts,worktree:$w,tz:$t}' >"$d/permit.json"
+printf '%s\n' '{"rc":32,"go_rc":1,"sdk_rc":1,"stderr":["legacy failure"],"canary":"channel-canary","ts":1}' >"$d/permit.json"
+export GOAL_GATE_PERMIT="$d/permit.json"
 out=$(agent_in haiku | "$dir/goal-gate"); rc=$?
 if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1; then
-  echo 'PASS 19 permit_zero_rc_denied'; ok=$((ok+1))
-else echo "FAIL 19 permit_zero_rc_denied: rc=$rc out=$out"; fi
-
-jq -nc --argjson ts "$(date +%s)" \
-  '{rc:32,go_rc:1,sdk_rc:1,stderr:["code-channel: rc=32"],canary:"channel-canary",ts:$ts}' >"$d/permit.json"
-out=$(agent_in haiku | "$dir/goal-gate"); rc=$?
-if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1; then
-  echo 'PASS 20 permit_missing_worktree_denied'; ok=$((ok+1))
-else echo "FAIL 20 permit_missing_worktree_denied: rc=$rc out=$out"; fi
+  echo 'PASS 15 agent_denied_even_with_legacy_permit'; ok=$((ok+1))
+else echo "FAIL 15 agent_denied: rc=$rc out=$out"; fi
 
 out=$(stop "g25a-$$" $'goal-check dcfg-x\nКонтроль задач: выполнено 5 · в процессе 0 · открыто 1\n✅ DONE')
 if isblock "$out" && jq -e '.reason | contains("mark finished tasks completed")' <<<"$out" >/dev/null 2>&1; then

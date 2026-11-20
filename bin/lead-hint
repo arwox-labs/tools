@@ -215,14 +215,18 @@ lead_allowlist() {
         return 0 ;;
     esac
 
-    if [[ $base == code-channel || $base == sdk-agent ]]; then
+    if [[ $base == sdk-agent ]]; then
+      printf '%s' 'lead allowlist: sdk-agent is retired; use /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
+      return 0
+    fi
+
+    if [[ $base == code-channel ]]; then
       if [[ $bg != true ]]; then
         fgarg=${tok[idx+1]:-}
-        if [[ $base == code-channel && ( $fgarg == --help || $fgarg == -h || $fgarg == --plan || $fgarg == use ) ]] ||
-           [[ $base == sdk-agent && $fgarg == --help ]]; then
+        if [[ $fgarg == --help || $fgarg == -h || $fgarg == --plan || $fgarg == use ]]; then
           continue
         fi
-        printf '%s' 'lead allowlist (owner 26.10): the lead starts code-channel/sdk-agent only in background; run it in background (tool_input.run_in_background=true) — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
+        printf '%s' 'lead allowlist (owner 26.10): the lead starts code-channel only in background; run it in background (tool_input.run_in_background=true) — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
         return 0
       fi
       continue
@@ -535,7 +539,7 @@ lead_allowlist() {
         case $base in
           bd|ls|cat|grep|jq|head|tail|wc|sort|uniq|cut|du|file|stat|diff|md5sum|sha256sum|basename|dirname|realpath|readlink|tr|date|echo|printf|pgrep|ps) ;;
           *)
-            if [[ -x /root/workspaces/tools/bin/$base && $base != code-channel && $base != sdk-agent ]]; then :
+            if [[ -x /root/workspaces/tools/bin/$base && $base != code-channel ]]; then :
             else
               printf '%s' 'lead allowlist (owner 26.10): xargs runs only an allowlisted non-interpreter command — route: xargs <allowlisted command>'
               return 0
