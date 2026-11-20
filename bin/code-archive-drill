@@ -54,9 +54,31 @@ build_url() {
   fi
 }
 
-# Select name: explicit CA_DRILL_NAME or random from state/*.pushed_at
+# Production GitLab rejects a leading dot in a project slug, so the one GitHub
+# source whose name begins with a dot is archived under a fixed destination
+# name; the source name still keys state, the local copy and every journal line.
+gitlab_name(){
+  case "$1" in .github) printf 'dot-github';; *) printf '%s' "$1";; esac
+}
+# The dated rewritten namespace written on a rejected ref is
+# refs/<kind>/rewritten/YYYYMMDD-HHMMSS/<full leaf>, the timestamp being exactly
+# `date +%Y%m%d-%H%M%S` (8 digits, a dash, 6 digits) and the leaf keeping every
+# component of the source ref. Sets $rl_leaf and returns 0 only for that shape.
+rewritten_leaf(){
+  local rest ts
+  rest="${1#"refs/$2/rewritten/"}"
+  rl_leaf=""
+  [[ "$rest" == "$1" ]] && return 1
+  ts="${rest%%/*}"
+  [[ "$rest" == */* && "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]] || return 1
+  rl_leaf="${rest#*/}"
+  [[ -n "$rl_leaf" ]]
+}
+
+# Select name: explicit CA_DRILL_NAME or random from state/*.pushed_at. Every
+# marker counts, hidden ones included (.github.pushed_at starts with a dot).
 if [[ -z "$name" ]]; then
-  mapfile -t pushed_at < <(ls -1 "$CA_STATE_DIR"/*.pushed_at 2>/dev/null | xargs -r -n1 basename -s .pushed_at || true)
+  mapfile -t pushed_at < <(find "$CA_STATE_DIR" -maxdepth 1 -type f -name '*.pushed_at' -printf '%f\n' 2>/dev/null | sed 's/\.pushed_at$//' | sort)
   (( ${#pushed_at[@]} > 0 )) && name="$(printf '%s\n' "${pushed_at[@]}" | shuf -n1)" || true
 fi
 
@@ -69,11 +91,11 @@ if [[ "$CA_GITLAB_BASE" == https://* ]]; then
   export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="${CA_ASKPASS_CMD:-$(dirname "$0")/code-archive}" CA_ASKPASS=1
 fi
 
-# Check refs for every state entry before restoring a random one.
+# Check refs for every state entry before restoring a random one. Markers are
+# enumerated by name, not by a shell glob, so a hidden one is checked too.
 exit_code=0
 mismatches=()
-for state_file in "$CA_STATE_DIR"/*.pushed_at; do
-  [[ -f "$state_file" ]] || continue
+while IFS= read -r state_file; do
   repo_name=$(basename "$state_file" .pushed_at)
   copy_dir="$CA_REPOS_DIR/$repo_name.git"
   exec {lockfd}>"${CA_STATE_DIR}/$repo_name.lock"
@@ -92,9 +114,10 @@ for state_file in "$CA_STATE_DIR"/*.pushed_at; do
   local_refs=$(( $(git --git-dir="$copy_dir" for-each-ref refs/heads 2>/dev/null | wc -l) + $(git --git-dir="$copy_dir" for-each-ref refs/tags 2>/dev/null | wc -l) ))
 
   # Fetch GitLab refs once. A missing project clears pushed_at; a transient
-  # failure preserves state for the next drill.
-  repo_gitlab_url=$(build_url "$CA_GITLAB_BASE" "$repo_name")
-  ls_out=$(git ls-remote --heads --tags "$repo_gitlab_url" 2>&1); ls_rc=$?
+  # failure preserves state for the next drill. --refs drops peeled tags, so
+  # every remaining line is a real ref with its object id.
+  repo_gitlab_url=$(build_url "$CA_GITLAB_BASE" "$(gitlab_name "$repo_name")")
+  ls_out=$(git ls-remote --refs --heads --tags "$repo_gitlab_url" 2>&1); ls_rc=$?
   if [[ "$ls_rc" != 0 ]]; then
     if [[ "$ls_out" == *'not found'* || "$ls_out" == *'does not appear to be a git repository'* ]]; then
       log "drill:missing $repo_name gitlab layer=gitlab $(reason "$ls_out")"
@@ -106,19 +129,34 @@ for state_file in "$CA_STATE_DIR"/*.pushed_at; do
     exec {lockfd}>&-
     continue
   fi
-  gitlab_refs=$(printf '%s\n' "$ls_out" | awk '$2 !~ /\^\{\}$/ { print $2 }' | sort)
-  local_names=$(git --git-dir="$copy_dir" for-each-ref --format='%(refname)' refs/heads refs/tags | sort)
-  missing=$(comm -23 <(printf '%s\n' "$local_names") <(printf '%s\n' "$gitlab_refs"))
-  if [[ -n "$missing" ]]; then
-    missing_count=$(printf '%s\n' "$missing" | wc -l | tr -d '[:space:]')
-    log "drill:mismatch incomplete $repo_name layer=gitlab $missing_count missing"
+  # A source ref is copied only as its exact name with its exact OID, or under
+  # the documented dated rewritten namespace of the same kind and full leaf
+  # (refs/<kind>/rewritten/<ts>/<leaf>). A stale same-name tip, a sibling ref
+  # or an unrelated archive name holding that object cannot stand in for it.
+  gitlab_refs=$(printf '%s\n' "$ls_out" | awk '$2 !~ /\^\{\}$/ { print $1 " " $2 }' | sort)
+  declare -A gl_exact=() gl_rewritten=()
+  while read -r gobj gref; do
+    [[ -n "$gref" ]] || continue
+    gl_exact["$gref $gobj"]=1
+    gkind="${gref#refs/}"; gkind="${gkind%%/*}"
+    if rewritten_leaf "$gref" "$gkind"; then gl_rewritten["$gkind $gobj $rl_leaf"]=1; fi
+  done <<<"$gitlab_refs"
+  missing=()
+  while read -r ref obj; do
+    [[ -n "$ref" ]] || continue
+    kind="${ref#refs/}"; kind="${kind%%/*}"; leaf="${ref#"refs/$kind/"}"
+    [[ -n "${gl_exact[$ref $obj]:-}" || -n "${gl_rewritten[$kind $obj $leaf]:-}" ]] && continue
+    missing+=("$ref")
+  done < <(git --git-dir="$copy_dir" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags)
+  if (( ${#missing[@]} )); then
+    log "drill:mismatch incomplete $repo_name layer=gitlab ${#missing[@]} missing"
     rm -f "$state_file"
     mismatches+=("$repo_name")
     exit_code=1
   fi
   state_write "$CA_STATE_DIR/$repo_name.refs" "$local_refs $(printf '%s\n' "$gitlab_refs" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
   exec {lockfd}>&-
-done
+done < <(find "$CA_STATE_DIR" -maxdepth 1 -type f -name '*.pushed_at' 2>/dev/null | sort)
 state_write "$CA_STATE_DIR/drill.mismatch" "$(printf '%s\n' "${mismatches[@]}")"
 
 # Restore one selected project after all state markers have been reconciled.
@@ -127,7 +165,7 @@ if [[ -z "$name" ]]; then
   exit_code=1
 else
   rm -rf "$drill_dir"
-  gitlab_url=$(build_url "$CA_GITLAB_BASE" "$name")
+  gitlab_url=$(build_url "$CA_GITLAB_BASE" "$(gitlab_name "$name")")
   if ! git clone -q --bare "$gitlab_url" "$drill_dir" 2>/dev/null; then
     log "drill:mismatch restore $name layer=gitlab clone-failed"
     exit_code=1
