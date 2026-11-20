@@ -10,7 +10,7 @@ ev=$(jq -er '.hook_event_name | select(type == "string")' <<<"$json") || exit 0
 if [ "$ev" = "PreToolUse" ]; then
   tool=$(jq -er '.tool_name // "" | select(type == "string")' <<<"$json") || exit 0
   [ "$tool" = "Agent" ] || exit 0
-  jq -nc '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Agent tool is disabled; use /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>"}}'
+  jq -nc '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Agent tool is disabled; use /root/workspaces/tools/bin/code-agent auto|audit <worktree> <TZ>"}}'
   exit 0
 fi
 [ "$ev" = "Stop" ] || exit 0

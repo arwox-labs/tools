@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Wrapper command and archive recovery
+
+Use `bin/code-agent` for new implementation and audit work. `bin/code-channel` is the legacy-compatible entry point to the same wrapper. Invoke one of these commands; do not run `opencode run` directly as a replacement for the wrapper. When restoring archived material, retain the archived source unchanged and treat its `code-channel` wrapper as legacy. Run the legacy wrapper only when recovery requires it. For every restored working copy, migrate active calls to `/root/workspaces/tools/bin/code-agent` and verify that installed command with `--plan` before resuming development. The archived project's relative `bin/code-agent`, if present, belongs to that archived copy and is not the installed wrapper.
+
 ## Secrets & Tools — one place (owner, 12.09.2026, all providers)
 
 - This directory is THE single home for reusable scripts, wrappers and utilities (`/root/workspaces/tools/`). Project-local wrappers stay in their project; temporary files go to the session scratchpad or `/tmp`, never here.

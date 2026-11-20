@@ -2,11 +2,12 @@
 set +x
 set -uo pipefail
 usage() {
+    local command_name=${0##*/}
     printf '%s\n' \
-        'usage: code-channel go <project> <tz> [--model provider/model]' \
-        '       code-channel <auto|audit|delivery> <project> <tz>' \
-        '       code-channel use go "<owner quote>"' \
-        '       code-channel --plan' \
+        "usage: $command_name go <project> <tz> [--model provider/model]" \
+        "       $command_name <auto|audit|delivery> <project> <tz>" \
+        "       $command_name use go \"<owner quote>\"" \
+        "       $command_name --plan" \
         'worker: OpenCode CLI. delivery may commit, push a task branch and open or merge a PR.' \
         'exit 27: loop guard; CODE_CHANNEL_LOOP_LIMIT controls the repeated-line threshold (default 30)' \
         'exit 28: active channel unavailable; exit 29: TZ test stalled; exit 31: TZ test failed' \
