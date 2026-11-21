@@ -447,22 +447,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/git-maintenance-out.log'
     },
     {
-      name: 'hh-cabinet',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-dev/services/cabinet.py',
-      cwd: '/root/workspaces/projects/hh-scoring-dev',
-      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-cabinet-error.log',
-      out_file: '/root/.pm2/logs/hh-cabinet-out.log'
-    },
-    {
       name: 'hh-cabinet-bridge',
       time: true,
       merge_logs: true,
@@ -480,55 +464,6 @@ module.exports = {
       exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-cabinet-bridge-error.log',
       out_file: '/root/.pm2/logs/hh-cabinet-bridge-out.log'
-    },
-    {
-      name: 'hh-cabinet-staging',
-      time: true,
-      merge_logs: true,
-      env: { CABINET_PORT: '20100' },
-      script: '/root/workspaces/projects/hh-scoring-dev/services/cabinet.py',
-      cwd: '/root/workspaces/projects/hh-scoring-dev',
-      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-cabinet-staging-error.log',
-      out_file: '/root/.pm2/logs/hh-cabinet-staging-out.log'
-    },
-    {
-      name: 'hh-dashboard-fastloop',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-dev/scripts/dashboard_fastloop.sh',
-      cwd: '/root/workspaces/projects/hh-scoring-dev',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-dashboard-fastloop-error.log',
-      out_file: '/root/.pm2/logs/hh-dashboard-fastloop-out.log'
-    },
-    {
-      name: 'hh-hub-api',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-dev/services/hub_api.py',
-      cwd: '/root/workspaces/projects/hh-scoring-dev',
-      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-hub-api-error.log',
-      out_file: '/root/.pm2/logs/hh-hub-api-out.log'
     },
     {
       name: 'hh-import',
@@ -553,60 +488,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/hh-import-out.log'
     },
     {
-      name: 'hh-litestream',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-dev/scripts/litestream-start.sh',
-      cwd: '/root/workspaces/projects/hh-scoring-dev',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-litestream-error.log',
-      out_file: '/root/.pm2/logs/hh-litestream-out.log'
-    },
-    {
-      name: 'hh-pipeline',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-dev/scripts/pipeline_events.py',
-      args: [
-        '--loop'
-      ],
-      cwd: '/root/workspaces/projects/hh-scoring-dev',
-      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-pipeline-error.log',
-      out_file: '/root/.pm2/logs/hh-pipeline-out.log'
-    },
-    {
-      name: 'hh-pipeline-prod',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-prod/scripts/pipeline_events.py',
-      args: [
-        '--loop'
-      ],
-      cwd: '/root/workspaces/projects/hh-scoring-prod',
-      interpreter: 'python',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-pipeline-prod-error.log',
-      out_file: '/root/.pm2/logs/hh-pipeline-prod-out.log'
-    },
-    {
       name: 'hh-refetch',
       time: true,
       merge_logs: true,
@@ -629,22 +510,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/hh-refetch-out.log'
     },
     {
-      name: 'hh-screening-monitor',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-dev/scripts/monitor_daemon.py',
-      cwd: '/root/workspaces/projects/hh-scoring-dev',
-      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/hh-screening-monitor-error.log',
-      out_file: '/root/.pm2/logs/hh-screening-monitor-out.log'
-    },
-    {
       name: 'hh-token-refresh',
       time: true,
       merge_logs: true,
@@ -665,23 +530,6 @@ module.exports = {
       preflight_env_keys: ['HH_CLIENT_ID', 'HH_CLIENT_SECRET', 'TG_BOT_TOKEN', 'TG_CHAT_ID'],
       error_file: '/root/.pm2/logs/hh-token-refresh-error.log',
       out_file: '/root/.pm2/logs/hh-token-refresh-out.log'
-    },
-    {
-      name: 'hh-wal-checkpoint',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/hh-scoring-prod/scripts/wal_checkpoint.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '*/10 * * * *',
-      error_file: '/root/.pm2/logs/hh-wal-checkpoint-error.log',
-      out_file: '/root/.pm2/logs/hh-wal-checkpoint-out.log'
     },
     {
       name: 'hr-bot-v2',
