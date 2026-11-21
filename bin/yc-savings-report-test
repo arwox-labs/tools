@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# yc-savings-report-test: offline-проверка bin/yc-savings-report на PATH-стабах yc и curl.
+# Ни одного обращения к Yandex Cloud или Telegram. Кейсы: обычная неделя, рост egress,
+# отсутствие данных, перерасход, нет токена, --json.
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+ok=0; total=0
+pass() { echo "PASS $1"; ok=$((ok+1)); total=$((total+1)); }
+fail() { echo "FAIL $1${2:+ — $2}"; total=$((total+1)); }
+
+mkdir -p "$T/stub"
+# sku-отчёт генерируется из env: S_TOTAL — сумма всех SKU (top вычитается, чтобы сошлось)
+cat > "$T/stub/yc" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${YC_STUB_LOG:-/dev/null}"
+[[ ${YC_STUB_FAIL:-0} == 1 ]] && exit 1
+[[ ${YC_STUB_JUNK:-0} == 1 ]] && { printf 'not json at all\n'; exit 0; }
+jq -rn --argjson total "${S_TOTAL:-46.0}" --arg egress "${S_EGRESS:-13.87}" '
+  def sku($i;$v): {sku:{id:$i,name:$i}, expense:{value:($v|tostring)}, pricing_quantity:{value:"1"}};
+  ($total - 38.0) as $rest
+  | {currency:"RUB", cost:($total|tostring), expense:{value:($total|tostring),unit:"RUB"},
+     entities_data:[ sku("storage.api.network.inet.egress";$egress),
+                     sku("compute.instances.standard.vcpu";"15.0"),
+                     sku("storage.bucket.used_space.cold";"2.13"),
+                     sku("storage.api.operations.list";"1.0"),
+                     sku("mdb.postgres.health";"6.0"),
+                     sku("cdn.requests";($rest|tostring)) ]}
+  | tojson' | jq .
+EOF
+cat > "$T/stub/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\0' "$*" >> "$CURL_STUB_LOG"
+for a in "$@"; do [[ $a == *sendMessage* ]] && exit "${CURL_STUB_RC:-0}"; done
+exit "${CURL_STUB_RC:-0}"
+EOF
+chmod +x "$T/stub/yc" "$T/stub/curl"
+# yc-стаб использует системный jq: симлинк не нужен, PATH-стаб только для yc/curl
+
+env_ok="$T/pm2-notify.env"; printf 'TG_BOT_TOKEN=test-token\nTG_CHAT_ID=test-chat\n' > "$env_ok"
+env_empty="$T/empty.env"; : > "$env_empty"
+
+run() { # cmd... — env передаётся явным env-аргументом, т.к. "$@" не наследует префиксные присваивания
+  local out rc
+  out=$(PATH="$T/stub:$PATH" CURL_STUB_LOG="$T/curl.log" \
+    YC_SAVINGS_NOTIFY_ENV="${YC_SAVINGS_NOTIFY_ENV:-$env_ok}" YC_STUB_LOG="$T/yc.log" "$@" 2>&1); rc=$?
+  RUN_OUT="$out"; RUN_RC=$rc
+}
+
+# 1: обычная неделя в бюджете (сумма SKU = 46 ₽ за 7 дней -> 6.57 ₽/д <= 6.6)
+: > "$T/curl.log"
+run "$bin/yc-savings-report" --dry-run
+if [[ $RUN_RC == 0 && $RUN_OUT == *"💸 Yandex Cloud: неделя"* && $RUN_OUT == *"в бюджете"* \
+      && $RUN_OUT == *"было 26.22 ₽/день → сейчас 6.57 ₽/день (бюджет ≤6.6)"* \
+      && $RUN_OUT == *"Топ-5 SKU"* && $RUN_OUT == *"egress (Object Storage, inet): 13.87 ₽"* \
+      && $RUN_OUT == *"холодное хранение (bucket cold): 2.13 ₽"* \
+      && $RUN_OUT == *"операции Object Storage: 17 ₽"* \
+      && $RUN_OUT == *"прочие сервисы: 29 ₽"* ]]; then
+  pass "1: normal week within budget"
+else fail "1: normal week" "rc=$RUN_RC out<<$RUN_OUT>>"; fi
+grep -q "get-sku-usage-report dn2s45ih4vaq9nodg0sf" "$T/yc.log" && grep -q -- "--aggregation-period day" "$T/yc.log" \
+  && pass "1b: new API form, account, day aggregation" || fail "1b: yc args" "$(cat "$T/yc.log")"
+[[ ! -s "$T/curl.log" ]] && pass "1c: dry-run sent nothing" || fail "1c: dry-run sent nothing"
+
+# 2: рост egress (30 ₽/д -> итог 154.87 ₽/нед, avg 22.12 ₽/д) отражён в топе и строке egress
+run env S_EGRESS=30 S_TOTAL=154.87 "$bin/yc-savings-report" --dry-run
+if [[ $RUN_RC == 0 && $RUN_OUT == *"egress (Object Storage, inet): 30 ₽"* \
+      && $RUN_OUT == *"• storage.api.network.inet.egress: 30 ₽"* && $RUN_OUT == *"перерасход"* ]]; then
+  pass "2: egress growth visible"
+else fail "2: egress growth" "rc=$RUN_RC out<<$RUN_OUT>>"; fi
+
+# 3: отсутствие данных (yc падает) -> rc 2
+run env YC_STUB_FAIL=1 "$bin/yc-savings-report" --dry-run
+if [[ $RUN_RC == 2 ]]; then pass "3: no data -> rc 2"; else fail "3: no data" "rc=$RUN_RC out<<$RUN_OUT>>"; fi
+
+# 3b: yc вернул мусор -> rc 2
+run env YC_STUB_JUNK=1 "$bin/yc-savings-report" --dry-run
+if [[ $RUN_RC == 2 ]]; then pass "3b: junk report -> rc 2"; else fail "3b: junk" "rc=$RUN_RC out<<$RUN_OUT>>"; fi
+
+# 4: перерасход (avg 22.12 ₽/д > 6.6 -> (154.87/7 - 6.6)*30 = 465.73 ₽/мес)
+run env S_EGRESS=30 S_TOTAL=154.87 "$bin/yc-savings-report" --dry-run
+if [[ $RUN_RC == 0 && $RUN_OUT == *"⚠️ перерасход 465.73 ₽/мес"* ]]; then
+  pass "4: over-budget amount per month"
+else fail "4: over-budget" "rc=$RUN_RC out<<$RUN_OUT>>"; fi
+
+# 5: нет токена -> rc 3, dry-run при этом ok
+run env YC_SAVINGS_NOTIFY_ENV="$env_empty" "$bin/yc-savings-report" --dry-run
+[[ $RUN_RC == 0 ]] && pass "5a: dry-run ignores missing token" || fail "5a: dry-run token" "rc=$RUN_RC"
+run env YC_SAVINGS_NOTIFY_ENV="$env_empty" "$bin/yc-savings-report"
+if [[ $RUN_RC == 3 && $RUN_OUT == *"no telegram token/chat"* ]]; then
+  pass "5b: missing token -> rc 3"
+else fail "5b: missing token" "rc=$RUN_RC out<<$RUN_OUT>>"; fi
+
+# 6: реальный режим шлёт через стаб curl один раз, rc 0
+: > "$T/curl.log"
+# 6a: yc падает — rc 2 даже в dry-run (нет данных важнее режима)
+run env YC_STUB_FAIL=1 "$bin/yc-savings-report" --dry-run
+[[ $RUN_RC == 2 ]] && pass "6a: no data beats dry-run" || fail "6a: no data beats dry-run" "rc=$RUN_RC"
+: > "$T/curl.log"
+run "$bin/yc-savings-report"
+if [[ $RUN_RC == 0 && $(tr '\0' '\n' < "$T/curl.log" | grep -c sendMessage) == 1 ]]; then
+  pass "6: send via curl stub once"
+else fail "6: send" "rc=$RUN_RC log<<$(tr '\0' '\n' < "$T/curl.log")>>"; fi
+# curl-стаб не должен дёргать сеть: проверка, что вызов только к api.telegram.org с test-token
+tr '\0' '\n' < "$T/curl.log" | grep -q 'api.telegram.org/bottest-token/sendMessage' \
+  && pass "6b: telegram url with stub token" || fail "6b: telegram url"
+
+# 7: --json — машинный вывод с ожидаемыми полями
+run env S_EGRESS=30 S_TOTAL=154.87 "$bin/yc-savings-report" --dry-run --json
+jrc=$RUN_RC; jout=$RUN_OUT
+got=$(printf '%s' "$jout" | jq -r '[.total,.avg_per_day,.forecast_month,.egress_total,.cold_total,.object_ops_total,.other_services_total,(.top|length),(.top[0].id)] | @tsv' 2>/dev/null)
+if [[ $jrc == 0 && $got == $'154.87\t22.12\t663.73\t30\t2.13\t33.13\t137.87\t5\tcdn.requests' ]]; then
+  pass "7: --json numbers"
+else fail "7: --json" "rc=$jrc got=$got out<<$jout>>"; fi
+
+echo "—"; echo "$ok/$total PASS"
+[[ $ok == $total ]] && { echo "test: ALL PASS"; exit 0; } || exit 1

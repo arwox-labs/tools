@@ -222,7 +222,7 @@ used_kb() { df -P / | awk 'NR==2 {print $3}'; }
 declared_paths() { # источник: crontab | ecosystem
   local src=$1
   if [ "$src" = crontab ]; then
-    crontab -l 2>/dev/null | grep -oE '/[^[:space:]]+' \
+    ${DR_CRONTAB_CMD:-crontab -l} 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -oE '/[^[:space:]]+' \
       | grep -E '(scripts?/|\.sh$|\.py$|\.js$)' | sed -E 's/:[0-9]+$//' | grep '^/' | sort -u
   else
     grep -oE "script: *'[^']+'" "$ECOSYSTEM" 2>/dev/null | sed -E "s/script: *'([^']+)'/\1/" | grep '^/' | sort -u
