@@ -50,7 +50,7 @@ data=$(printf '%s' "$report" | jq -rc --arg egress "$SKU_EGRESS" --arg cold "$SK
   | ((.cost | amount) // (.expense.value | amount)) as $total
   | if ($total == null or (.entities_data | type != "array")) then error("invalid report") else . end
   | [.entities_data[]
-     | ((.sku.name // .sku.id // "") | tostring) as $sid
+     | ((.sku.name // .service.name // .sku.id // "") | tostring) as $sid
      | {id: ($sid | ascii_downcase), name: (.sku.ru_translation // .sku.translation // $sid),
         value: ((.expense.value | amount) // 0)}]
   | {currency: $currency, total: $total, rows: .}
