@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# session-janitor (owner 2026-11-21): kill zombie subagent sessions and watchdog loops.
+# Zombie = subagent session (has parentID) idle longer than IDLE_MIN; its report already delivered.
+# Watchdog loop = shell process matching "seq 1 <n>" + sleep, older than LOOP_MIN minutes.
+# Never touches top-level sessions. Idempotent. --dry-run prints only.
+set -u
+
+DRY=0
+[ "${1:-}" = --dry-run ] && DRY=1
+
+IDLE_MIN=${IDLE_MIN:-15}
+LOOP_MIN=${LOOP_MIN:-10}
+LOG=${LOG:-/root/workspaces/tools/logs/session-janitor.log}
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+
+log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+
+sessions=$(opencode api GET /api/session 2>/dev/null) || { log "api unavailable; skip"; exit 0; }
+
+removed=0
+killed=0
+now=$(date +%s)
+
+while IFS=$'\t' read -r id parent idle; do
+  [ -n "${id:-}" ] && [ -n "${parent:-}" ] || continue
+  [[ $id == ses_* ]] || continue
+  case "${idle:-}" in ''|*[!0-9]*) continue ;; esac
+  age=$(( now - idle ))
+  [ "$age" -gt $(( IDLE_MIN * 60 )) ] || continue
+  if [ "$DRY" = 1 ]; then
+    log "would-remove $id parent=$parent idle=${age}s"
+  else
+    if opencode api DELETE "/api/session/$id" >/dev/null 2>&1; then
+      log "removed $id parent=$parent idle=${age}s"
+      removed=$((removed + 1))
+    else
+      log "remove-failed $id parent=$parent idle=${age}s"
+    fi
+  fi
+done < <(printf '%s' "$sessions" | jq -r '.data[]? | [.id, (.parentID // ""), ((.time.idle // .time.updated // 0) / 1000 | floor)] | @tsv' 2>/dev/null)
+
+for p in $(pgrep -f 'seq 1 [0-9]' 2>/dev/null); do
+  et=$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')
+  [ -n "$et" ] && [ "$et" -gt $(( LOOP_MIN * 60 )) ] || continue
+  if [ "$DRY" = 1 ]; then
+    log "would-kill $p loop age=${et}s"
+  else
+    kill "$p" 2>/dev/null && { log "killed $p loop age=${et}s"; killed=$((killed + 1)); }
+  fi
+done
+
+log "done dry=$DRY removed=$removed killed=$killed"
+exit 0
