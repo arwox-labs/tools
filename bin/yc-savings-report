@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# yc-savings-report: недельный отчёт экономии Yandex Cloud в Telegram (atom Y4, spec 121).
+# Источник данных: yc billing v1 consumption-core get-sku-usage-report (подход forms-gw-guard.sh).
+# Коды: 0 ok, 2 нет данных, 3 нет токена. --dry-run печатает, не шлёт; --json — машинно.
+set -u
+
+ACCOUNT="${YC_ACCOUNT_ID:-dn2s45ih4vaq9nodg0sf}"
+PROFILE="${YC_PROFILE:-default}"
+NOTIFY_ENV="${YC_SAVINGS_NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}"
+BASELINE_PER_DAY="${YC_SAVINGS_BASELINE:-26.22}"
+BUDGET_PER_DAY="${YC_SAVINGS_BUDGET:-6.6}"
+SKU_EGRESS='storage.api.network.inet.egress'
+SKU_COLD='storage.bucket.used_space.cold'
+OBJ_PREFIXES=('storage.api' 'storage.bucket' 'storage.transactions')
+
+dry=0 json=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) dry=1 ;;
+    --json) json=1 ;;
+    -h|--help) printf 'usage: yc-savings-report [--dry-run] [--json]\n'; exit 0 ;;
+    *) printf 'yc-savings-report: unknown argument: %s\n' "$a" >&2; exit 2 ;;
+  esac
+done
+
+tz_msk() { TZ=Europe/Moscow date "$@"; }
+# ISO-8601 с фиксированным +03:00 (МСК), из unix-секунд
+iso_msk() { date -u -d "@$1" +%FT%T'+03:00'; }
+
+end_epoch=$(tz_msk -d 'today 00:00:00' +%s)
+start_epoch=$(tz_msk -d "@$((end_epoch - 604800))" +%s)
+start_iso=$(iso_msk "$start_epoch")
+end_iso=$(iso_msk "$((end_epoch - 1))")
+
+if ! report=$(timeout 120 yc --profile "$PROFILE" --retry 0 \
+    billing v1 consumption-core get-sku-usage-report "$ACCOUNT" \
+    --start-date "$start_iso" --end-date "$end_iso" \
+    --aggregation-period day --format json 2>/dev/null); then
+  printf 'yc-savings-report: no data (billing API call failed)\n' >&2
+  exit 2
+fi
+
+data=$(printf '%s' "$report" | jq -rc --arg egress "$SKU_EGRESS" --arg cold "$SKU_COLD" \
+  --argjson objp "$(printf '%s\n' "${OBJ_PREFIXES[@]}" | jq -Rn '[inputs]')" '
+  def amount:
+    (if type == "number" then .
+     elif type == "string" and test("^-?[0-9]+(\\.[0-9]+)?$") then tonumber
+     else null end);
+  (.currency // "") as $currency
+  | ((.cost | amount) // (.expense.value | amount)) as $total
+  | if ($total == null or (.entities_data | type != "array")) then error("invalid report") else . end
+  | [.entities_data[]
+     | ((.sku.name // .sku.id // "") | tostring) as $sid
+     | {id: ($sid | ascii_downcase), name: (.sku.ru_translation // .sku.translation // $sid),
+        value: ((.expense.value | amount) // 0)}]
+  | {currency: $currency, total: $total, rows: .}
+' 2>/dev/null) || { printf 'yc-savings-report: no data (unparsable report)\n' >&2; exit 2; }
+
+summary=$(printf '%s' "$data" | jq -rc --arg egress "$SKU_EGRESS" --arg cold "$SKU_COLD" \
+  --argjson objp "$(printf '%s\n' "${OBJ_PREFIXES[@]}" | jq -Rn '[inputs]')" \
+  --arg start "$start_iso" --arg end "$end_iso" --arg base "$BASELINE_PER_DAY" --arg bud "$BUDGET_PER_DAY" '
+  def r2: (. * 100 | round) / 100;
+  .rows as $rows
+  | ($rows | map(select(.id == $egress)) | map(.value) | add // 0) as $egress
+  | ($rows | map(select(.id == $cold)) | map(.value) | add // 0) as $cold
+  | ($rows | map(select(.id | startswith("storage.api") or startswith("storage.bucket") or startswith("storage.transactions"))) | map(.value) | add // 0) as $object
+  | ($rows | map(select((.id | startswith("storage.api") or startswith("storage.bucket") or startswith("storage.transactions")) | not)) | map(.value) | add // 0) as $other
+  | ($rows | sort_by(-.value) | map(select(.value > 0)) | .[:5]) as $top
+  | {start: $start, end: $end, currency: .currency, total: (.total | r2),
+     avg_per_day: ((.total / 7) | r2), forecast_month: ((.total / 7 * 30) | r2),
+     baseline_per_day: ($base | tonumber), budget_per_day: ($bud | tonumber),
+     egress_total: ($egress | r2), egress_per_day: (($egress / 7) | r2),
+     cold_total: ($cold | r2), cold_per_day: (($cold / 7) | r2),
+     object_ops_total: ($object | r2), other_services_total: ($other | r2),
+     over_budget_per_month: (((.total / 7 - ($bud | tonumber)) * 30) | r2),
+     top: ($top | map({id, name, total: (.value | r2), per_day: ((.value / 7) | r2)}))}
+' 2>/dev/null) || { printf 'yc-savings-report: no data (aggregation failed)\n' >&2; exit 2; }
+
+msg=$(printf '%s' "$summary" | jq -r '
+  def fmt: tostring;
+  "*💸 Yandex Cloud: неделя*\n" +
+  "Период: \(.start[:10]) … \(.end[:10]) (МСК)\n\n" +
+  "было \(.baseline_per_day) ₽/день → сейчас \(.avg_per_day) ₽/день (бюджет ≤\(.budget_per_day))\n" +
+  "Итого за неделю: \(.total) \(.currency) · прогноз: \(.forecast_month) ₽/мес\n\n" +
+  "Топ-5 SKU за период:\n" +
+  (.top | map("• \(.name): \(.total) ₽ (\(.per_day) ₽/д)") | join("\n")) + "\n\n" +
+  "• egress (Object Storage, inet): \(.egress_total) ₽ (\(.egress_per_day) ₽/д)\n" +
+  "• холодное хранение (bucket cold): \(.cold_total) ₽ (\(.cold_per_day) ₽/д)\n" +
+  "• операции Object Storage: \(.object_ops_total) ₽\n" +
+  "• прочие сервисы: \(.other_services_total) ₽\n\n" +
+  (if .avg_per_day <= .budget_per_day
+   then "✅ в бюджете"
+   else "⚠️ перерасход \(.over_budget_per_month) ₽/мес" end)
+')
+
+if (( json )); then
+  printf '%s\n' "$summary"
+else
+  printf '%s\n' "$msg"
+fi
+
+if (( dry )); then exit 0; fi
+
+token=""; chat=""
+if [[ -f "$NOTIFY_ENV" ]]; then
+  set -a; . "$NOTIFY_ENV"; set +a
+  token="${TG_BOT_TOKEN:-}"; chat="${TG_CHAT_ID:-}"
+fi
+if [[ -z "$token" || -z "$chat" ]]; then
+  printf 'yc-savings-report: no telegram token/chat (%s)\n' "$NOTIFY_ENV" >&2
+  exit 3
+fi
+if ! curl -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
+    -d "chat_id=${chat}" --data-urlencode "text=$msg" >/dev/null 2>&1; then
+  printf 'yc-savings-report: send failed\n' >&2
+  exit 3
+fi
+exit 0
