@@ -352,7 +352,7 @@ module.exports = {
       min_uptime: 1000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
-      cron_restart: '30 */3 * * *',
+      cron_restart: '30 3 * * *',
       error_file: '/root/.pm2/logs/server-backup-error.log',
       out_file: '/root/.pm2/logs/server-backup-out.log'
     },
