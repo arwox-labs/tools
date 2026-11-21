@@ -41,9 +41,20 @@ class Policy(unittest.TestCase):
 
     def test_excludes_valueless_trees(self):
         for needle in ("--exclude '*/.worktrees'", '--exclude /root/workspaces/projects/.agent-work',
-                       '--exclude /root/workspaces/projects/.tmp'):
+                       '--exclude /root/workspaces/projects/.tmp/hh-clean',
+                       "--exclude '/root/workspaces/projects/.tmp/*.log'"):
             self.assertIn(needle, source)
+        self.assertNotIn('--exclude /root/workspaces/projects/.tmp \\\n', source)
         self.assertIn('/root/workspaces/projects/.tmp/repo-migration-backups', source)
+
+    def test_null_safe_snapshot_size(self):
+        # C1: null total_file_size -> rc!=0 (unknown), а не строка "null".
+        self.assertIn('.[0].total_file_size | select(. != null) | tostring', source)
+        result = subprocess.run(
+            ['jq', '-er', '.[0].total_file_size | select(. != null) | tostring'],
+            input='[{"total_file_size":null}]\n', capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.stdout.strip(), 'null')
 
     def test_retention(self):
         for hour in range(24):
@@ -97,7 +108,7 @@ unittest.main(argv=["policy"], verbosity=2)
 PY
 fi
 
-TMP="$(mktemp -d /tmp/dcfg-sb-selfcheck.XXXXXX)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/dcfg-sb-selfcheck.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 export TMPDIR="$TMP"
 
@@ -287,7 +298,7 @@ run_backup() { # ls_file notify_env argc_file [server-backup args...] -> rc
 }
 
 PASS=0
-TOTAL=29
+TOTAL=31
 SB_LOG="$TMP/logs/server-backup.log"
 STATS_LOG="$TMP/stats.log"; : >"$STATS_LOG"
 CHECK_LOG="$TMP/check.log"
@@ -323,9 +334,33 @@ if grep -q '<docker> <image> <save> <sha256:aaaaaaaa' "$IMG_ARGV" && ! grep -q '
   echo "[f] docker image save должен идти напрямую"; exit 1
 fi
 
+
 # Host integration uses published backup archives and requires an explicit opt-in.
 if [ "${STUB_HOST_INTEGRATION:-0}" != 1 ] || [ ! -w /root/backups/docker ] || [ -e /root/.codex/DELETE-APPROVED.json ]; then
-  echo "PASS $PASS/6 (stub-only; host Docker integration skipped)"
+  # C6 (эмпирика на локальном restic-репо) выполняется всегда: blanket --exclude .tmp теряет
+  # refs миграции org→labs; поимённые excludes мусора + явный путь сохраняют keep.txt, отсекают junk/x.txt.
+  REAL_RESTIC=/root/workspaces/tools/bin/restic
+  if [ -x "$REAL_RESTIC" ]; then
+    C6="$TMP/c6"; C6REPO="$C6/repo"; C6SRC="$C6/src"
+    mkdir -p "$C6SRC/.tmp/repo-migration-backups" "$C6SRC/.tmp/junk" "$C6SRC/data"
+    printf keep >"$C6SRC/.tmp/repo-migration-backups/keep.txt"
+    printf junk >"$C6SRC/.tmp/junk/x.txt"
+    printf data >"$C6SRC/data/a.txt"
+    if RESTIC_REPOSITORY="$C6REPO" RESTIC_PASSWORD=x timeout 60 "$REAL_RESTIC" init >>"$SB_LOG" 2>&1 \
+      && RESTIC_REPOSITORY="$C6REPO" RESTIC_PASSWORD=x timeout 60 "$REAL_RESTIC" backup \
+           --exclude "$C6SRC/.tmp/junk" "$C6SRC" "$C6SRC/.tmp/repo-migration-backups" >>"$SB_LOG" 2>&1 \
+      && c6_ls=$(RESTIC_REPOSITORY="$C6REPO" RESTIC_PASSWORD=x timeout 60 "$REAL_RESTIC" ls --recursive latest); then
+      if printf '%s\n' "$c6_ls" | grep -q "repo-migration-backups/keep.txt" \
+        && ! printf '%s\n' "$c6_ls" | grep -q "junk/x.txt"; then PASS=$((PASS+1)); else
+        echo "[C6] keep.txt отсутствует или junk/x.txt попал в снимок локального restic-репо"; exit 1
+      fi
+    else
+      echo "[C6] локальный restic init/backup/ls не завершился (см. $SB_LOG)"; exit 1
+    fi
+  else
+    echo "[C6] нет $REAL_RESTIC — эмпирический тест пропущен"; exit 1
+  fi
+  echo "PASS $PASS/7 (stub-only; host Docker integration skipped)"
   exit 0
 fi
 
@@ -430,9 +465,10 @@ fi
 # Y3: backup получает excludes бесполезных деревьев и отдельный путь repo-migration-backups.
 if grep -q "<--exclude> <\*/\.worktrees>" "$ARGV_A" \
   && grep -q '<--exclude> </root/workspaces/projects/\.agent-work>' "$ARGV_A" \
-  && grep -q '<--exclude> </root/workspaces/projects/\.tmp>' "$ARGV_A" \
+  && ! grep -q '<--exclude> </root/workspaces/projects/\.tmp>' "$ARGV_A" \
+  && grep -q '<--exclude> </root/workspaces/projects/\.tmp/hh-clean>' "$ARGV_A" \
   && grep -q '</root/workspaces/projects/\.tmp/repo-migration-backups>' "$ARGV_A"; then PASS=$((PASS+1)); else
-  echo "[a] нет excludes .worktrees/.agent-work/.tmp или пути repo-migration-backups в argv backup"; exit 1
+  echo "[a] нет excludes .worktrees/.agent-work/поимённых .tmp/* или пути repo-migration-backups в argv backup"; exit 1
 fi
 
 # --- (c): догон вне окна (BK_HOUR=14) не запускает server-backup.

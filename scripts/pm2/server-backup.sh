@@ -449,7 +449,17 @@ timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" backup --json --tag server --g
   --exclude /root/.gemini/tmp --exclude /root/.kimi-code/bin --exclude /root/.kimi-code/cache \
   --exclude /root/.kimi-code/logs --exclude /root/.kimi-code/sessions --exclude /root/.kimi-code/search-index \
   --exclude '*/.worktrees' --exclude /root/workspaces/projects/.agent-work \
-  --exclude /root/workspaces/projects/.tmp \
+  --exclude /root/workspaces/projects/.tmp/hh-clean \
+  --exclude /root/workspaces/projects/.tmp/cs-check \
+  --exclude /root/workspaces/projects/.tmp/cs-clean \
+  --exclude /root/workspaces/projects/.tmp/hh-clean-work \
+  --exclude /root/workspaces/projects/.tmp/mplan-docs \
+  --exclude /root/workspaces/projects/.tmp/sanitize-dev \
+  --exclude '/root/workspaces/projects/.tmp/*.log' \
+  --exclude '/root/workspaces/projects/.tmp/*.py' \
+  --exclude '/root/workspaces/projects/.tmp/*.txt' \
+  --exclude '/root/workspaces/projects/.tmp/*.tsv' \
+  --exclude '/root/workspaces/projects/.tmp/*.snapshot' \
   --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
   "${backup_paths[@]}" >"$backup_json" 2>>"$LOG"
 backup_rc=$?
@@ -528,7 +538,7 @@ if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
 fi
 
 # Y1: размер снимка берём из snapshot.json (поле total_file_size), без `restic stats --mode raw-data`.
-stats_size=$(jq -er '.[0].total_file_size | tostring' "$docker_proof/snapshot.json" 2>>"$LOG") \
+stats_size=$(jq -er '.[0].total_file_size | select(. != null) | tostring' "$docker_proof/snapshot.json" 2>>"$LOG") \
   || { log "stats size unavailable"; stats_size=unknown; }
 log "SUMMARY docker_rc=$docker_rc images_rc=$images_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
