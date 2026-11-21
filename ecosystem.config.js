@@ -1224,6 +1224,28 @@ module.exports = {
       cron_restart: '30 6 * * 1',
       error_file: '/root/.pm2/logs/cmd-audit-error.log',
       out_file: '/root/.pm2/logs/cmd-audit-out.log'
+    },
+    {
+      // spec:121 Y4 — недельный отчёт экономии Yandex Cloud в Telegram (пн 10:00 МСК, после недельного check)
+      name: 'yc-savings-report',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/bin/yc-savings-report',
+      args: '',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '0 10 * * 1',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
+      env: formsGwGuardEnv,
+      error_file: '/root/.pm2/logs/yc-savings-report-error.log',
+      out_file: '/root/.pm2/logs/yc-savings-report-out.log'
     }
   ]
 };
