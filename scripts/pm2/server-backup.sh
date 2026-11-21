@@ -456,10 +456,21 @@ timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" backup --json --tag server --g
   --exclude /root/workspaces/projects/.tmp/mplan-docs \
   --exclude /root/workspaces/projects/.tmp/sanitize-dev \
   --exclude '/root/workspaces/projects/.tmp/*.log' \
-  --exclude '/root/workspaces/projects/.tmp/*.py' \
-  --exclude '/root/workspaces/projects/.tmp/*.txt' \
-  --exclude '/root/workspaces/projects/.tmp/*.tsv' \
-  --exclude '/root/workspaces/projects/.tmp/*.snapshot' \
+  --exclude '/root/workspaces/projects/.tmp/dump_session.py' \
+  --exclude '/root/workspaces/projects/.tmp/gitlinks.txt' \
+  --exclude '/root/workspaces/projects/.tmp/live.txt' \
+  --exclude '/root/workspaces/projects/.tmp/mirror.txt' \
+  --exclude '/root/workspaces/projects/.tmp/r1.tsv' \
+  --exclude '/root/workspaces/projects/.tmp/r2.tsv' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s1.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s2.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s3.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s4.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s5.txt' \
+  --exclude '/root/workspaces/projects/.tmp/t-new.txt' \
+  --exclude '/root/workspaces/projects/.tmp/t-old.txt' \
+  --exclude '/root/workspaces/projects/.tmp/opencode-jsonc-20261104.snapshot' \
+  --exclude '/root/workspaces/projects/.tmp/opencode-jsonc-20261104b.snapshot' \
   --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
   "${backup_paths[@]}" >"$backup_json" 2>>"$LOG"
 backup_rc=$?

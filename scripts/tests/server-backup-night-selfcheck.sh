@@ -341,18 +341,26 @@ if [ "${STUB_HOST_INTEGRATION:-0}" != 1 ] || [ ! -w /root/backups/docker ] || [ 
   # refs миграции org→labs; поимённые excludes мусора + явный путь сохраняют keep.txt, отсекают junk/x.txt.
   REAL_RESTIC=/root/workspaces/tools/bin/restic
   if [ -x "$REAL_RESTIC" ]; then
-    C6="$TMP/c6"; C6REPO="$C6/repo"; C6SRC="$C6/src"
-    mkdir -p "$C6SRC/.tmp/repo-migration-backups" "$C6SRC/.tmp/junk" "$C6SRC/data"
-    printf keep >"$C6SRC/.tmp/repo-migration-backups/keep.txt"
-    printf junk >"$C6SRC/.tmp/junk/x.txt"
-    printf data >"$C6SRC/data/a.txt"
+    C6="$TMP/c6"; C6REPO="$C6/repo"; C6TMP="$C6/.tmp"
+    mkdir -p "$C6TMP/repo-migration-backups" "$C6TMP/junk"
+    printf keep >"$C6TMP/repo-migration-backups/keep.txt"
+    printf junk >"$C6TMP/junk/x.txt"
+    printf top >"$C6TMP/top.log"
+    printf live >"$C6TMP/live.txt"
+    # те же правила, что в server-backup.sh: поимённые каталоги + глобальный *.log уровня .tmp
+    # + поимённый мусор; явный путь repo-migration-backups передан отдельно.
     if RESTIC_REPOSITORY="$C6REPO" RESTIC_PASSWORD=x timeout 60 "$REAL_RESTIC" init >>"$SB_LOG" 2>&1 \
       && RESTIC_REPOSITORY="$C6REPO" RESTIC_PASSWORD=x timeout 60 "$REAL_RESTIC" backup \
-           --exclude "$C6SRC/.tmp/junk" "$C6SRC" "$C6SRC/.tmp/repo-migration-backups" >>"$SB_LOG" 2>&1 \
+           --exclude "$C6TMP/junk" \
+           --exclude "$C6TMP/*.log" \
+           --exclude "$C6TMP/live.txt" \
+           "$C6TMP" "$C6TMP/repo-migration-backups" >>"$SB_LOG" 2>&1 \
       && c6_ls=$(RESTIC_REPOSITORY="$C6REPO" RESTIC_PASSWORD=x timeout 60 "$REAL_RESTIC" ls --recursive latest); then
       if printf '%s\n' "$c6_ls" | grep -q "repo-migration-backups/keep.txt" \
-        && ! printf '%s\n' "$c6_ls" | grep -q "junk/x.txt"; then PASS=$((PASS+1)); else
-        echo "[C6] keep.txt отсутствует или junk/x.txt попал в снимок локального restic-репо"; exit 1
+        && ! printf '%s\n' "$c6_ls" | grep -q "junk/x.txt" \
+        && ! printf '%s\n' "$c6_ls" | grep -q "/top.log" \
+        && ! printf '%s\n' "$c6_ls" | grep -q "/live.txt"; then PASS=$((PASS+1)); else
+        echo "[C6] keep.txt отсутствует или мусор (junk/x.txt|top.log|live.txt) попал в снимок локального restic-репо"; exit 1
       fi
     else
       echo "[C6] локальный restic init/backup/ls не завершился (см. $SB_LOG)"; exit 1
