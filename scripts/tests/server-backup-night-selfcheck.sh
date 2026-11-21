@@ -48,11 +48,11 @@ class Policy(unittest.TestCase):
         self.assertIn('/root/workspaces/projects/.tmp/repo-migration-backups', source)
 
     def test_null_safe_snapshot_size(self):
-        # C1: null total_file_size -> rc!=0 (unknown), а не строка "null".
-        self.assertIn('.[0].total_file_size | select(. != null) | tostring', source)
+        # C1: null total_bytes_processed -> rc!=0 (unknown), а не строка "null".
+        self.assertIn('summary") | .total_bytes_processed | select(. != null) | tostring', source)
         result = subprocess.run(
-            ['jq', '-er', '.[0].total_file_size | select(. != null) | tostring'],
-            input='[{"total_file_size":null}]\n', capture_output=True, text=True)
+            ['jq', '-er', 'select(.message_type == "summary") | .total_bytes_processed | select(. != null) | tostring'],
+            input='{"message_type":"summary","total_bytes_processed":null}\n', capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotEqual(result.stdout.strip(), 'null')
 
