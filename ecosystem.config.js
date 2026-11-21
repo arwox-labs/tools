@@ -25,6 +25,23 @@ const formsBackupEnv = loadEnvFile('/root/workspaces/secrets/system/infra/yc-ser
 module.exports = {
   apps: [
     {
+      name: 'session-janitor',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/bin/session-janitor',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 3,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '*/5 * * * *',
+      error_file: '/root/.pm2/logs/session-janitor-error.log',
+      out_file: '/root/.pm2/logs/session-janitor-out.log'
+    },
+    {
       name: 'action-log-indexer',
       time: true,
       merge_logs: true,
