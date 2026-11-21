@@ -548,8 +548,8 @@ if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   [ "$(date +%-d)" -le 7 ] && drill
 fi
 
-# Y1: размер снимка берём из snapshot.json (поле total_file_size), без `restic stats --mode raw-data`.
-stats_size=$(jq -er '.[0].total_file_size | select(. != null) | tostring' "$docker_proof/snapshot.json" 2>>"$LOG") \
+# Y1: размер снимка берём из summary в backup.jsonl, без `restic stats --mode raw-data`.
+stats_size=$(jq -er 'select(.message_type == "summary") | .total_bytes_processed | select(. != null) | tostring' "$backup_json" 2>>"$LOG") \
   || { log "stats size unavailable"; stats_size=unknown; }
 log "SUMMARY docker_rc=$docker_rc images_rc=$images_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
