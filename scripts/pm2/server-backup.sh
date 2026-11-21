@@ -327,7 +327,7 @@ if ! flock -n 9; then
   log "backup already running; duplicate invocation skipped"
   exit 0
 fi
-backup_slot=$(( $(date +%s) / 10800 ))
+backup_slot=$(( $(date +%s) / 86400 ))
 slot_file="$STAGE/.server-backup.slot"
 if [ -f "$slot_file" ]; then
   read -r previous_slot previous_status <"$slot_file" || fail slot-state 1
@@ -393,6 +393,8 @@ paths=(
   /root/.mc /root/.docker /root/.gnupg /root/.beads /root/.dolt /root/.opencode
   /root/.agents /root/ecosystem.config.js /var/www /opt/actions-runner/.runner
   /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos /home/gitmirror/archived-repos
+  # Y3: единственная копия refs миграции org→labs (bd dcfg-48s4h.3) — вне исключённого .tmp.
+  /root/workspaces/projects/.tmp/repo-migration-backups
 )
 paths+=(/root/.tmux*)
 [ -d /var/lib/docker/volumes ] && [ ! -L /var/lib/docker/volumes ] || fail docker-inventory 1
@@ -446,6 +448,29 @@ timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" backup --json --tag server --g
   --exclude '/root/.codex/state_*.sqlite*' \
   --exclude /root/.gemini/tmp --exclude /root/.kimi-code/bin --exclude /root/.kimi-code/cache \
   --exclude /root/.kimi-code/logs --exclude /root/.kimi-code/sessions --exclude /root/.kimi-code/search-index \
+  --exclude '*/.worktrees' --exclude /root/workspaces/projects/.agent-work \
+  --exclude /root/workspaces/projects/.tmp/hh-clean \
+  --exclude /root/workspaces/projects/.tmp/cs-check \
+  --exclude /root/workspaces/projects/.tmp/cs-clean \
+  --exclude /root/workspaces/projects/.tmp/hh-clean-work \
+  --exclude /root/workspaces/projects/.tmp/mplan-docs \
+  --exclude /root/workspaces/projects/.tmp/sanitize-dev \
+  --exclude '/root/workspaces/projects/.tmp/*.log' \
+  --exclude '/root/workspaces/projects/.tmp/dump_session.py' \
+  --exclude '/root/workspaces/projects/.tmp/gitlinks.txt' \
+  --exclude '/root/workspaces/projects/.tmp/live.txt' \
+  --exclude '/root/workspaces/projects/.tmp/mirror.txt' \
+  --exclude '/root/workspaces/projects/.tmp/r1.tsv' \
+  --exclude '/root/workspaces/projects/.tmp/r2.tsv' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s1.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s2.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s3.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s4.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s5.txt' \
+  --exclude '/root/workspaces/projects/.tmp/t-new.txt' \
+  --exclude '/root/workspaces/projects/.tmp/t-old.txt' \
+  --exclude '/root/workspaces/projects/.tmp/opencode-jsonc-20261104.snapshot' \
+  --exclude '/root/workspaces/projects/.tmp/opencode-jsonc-20261104b.snapshot' \
   --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
   "${backup_paths[@]}" >"$backup_json" 2>>"$LOG"
 backup_rc=$?
@@ -464,10 +489,16 @@ for path in /var/lib/docker/volumes "${docker_upper_dirs[@]}"; do
 done
 log "backup snapshot=$snapshot_id"
 
-# Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
+# Y1: сверка зеркала. Воскресенье — полный `restic ls --recursive` по дереву S3;
+# остальные дни — число репозиториев из top-level metadata последнего снимка (без чтения данных).
 mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
-mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
-  | grep -Ec '(\.git)?/HEAD$')
+if [ "$(date +%u)" = 7 ]; then
+  mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
+    | grep -Ec '(\.git)?/HEAD$')
+else
+  mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
+    | grep -cE '/[^/]+\.git/?$')
+fi
 log "mirror-check s3=$mirror_s3 local=$mirror_local"
 if [ "$mirror_s3" -lt "$mirror_local" ]; then
   fail mirror-check "$((mirror_local - mirror_s3))"
@@ -481,8 +512,11 @@ case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
 check_rc=skip
 if [ "$run_hour" = 03 ]; then
+  # Y2: будни/суббота — только метаданные; воскресенье — read-data, 1-е вс месяца ~1/4 данных.
   check_args=()
-  [ "$(date +%u)" = 7 ] && check_args=(--read-data-subset="$(( ($(date +%-d) - 1) / 7 % 4 + 1 ))/4")
+  if [ "$(date +%u)" = 7 ] && [ "$(date +%-d)" -le 7 ]; then
+    check_args=(--read-data-subset=1/4)
+  fi
   run_step check "${NICE_PREFIX[@]}" "$RESTIC" check "${check_args[@]}" --retry-lock 30m
   check_rc=$?
   case "$check_rc" in 0|3) ;; *) fail check "$check_rc" ;; esac
@@ -514,12 +548,9 @@ if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   [ "$(date +%-d)" -le 7 ] && drill
 fi
 
-stats_output=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" stats --mode raw-data latest --tag server --retry-lock 30m 2>&1)
-stats_rc=$?
-printf '%s\n' "$stats_output" >>"$LOG"
-log "stats rc=$stats_rc"
-stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/Total Size:/ {print $2; exit}')
-case "$stats_rc" in 0|3) ;; *) fail stats "$stats_rc" ;; esac
+# Y1: размер снимка берём из snapshot.json (поле total_file_size), без `restic stats --mode raw-data`.
+stats_size=$(jq -er '.[0].total_file_size | select(. != null) | tostring' "$docker_proof/snapshot.json" 2>>"$LOG") \
+  || { log "stats size unavailable"; stats_size=unknown; }
 log "SUMMARY docker_rc=$docker_rc images_rc=$images_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
 docker_retention_rc=0
