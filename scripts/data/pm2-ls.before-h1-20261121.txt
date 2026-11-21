@@ -1,0 +1,84 @@
+┌────┬────────────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                           │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼────────────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 40 │ action-log-indexer             │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 69 │ agent-errors-weekly            │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 60 │ ags-search-watch               │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 3  │ amc-mvp-api                    │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 74 │ arwox-landing-hub              │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 51 │ backup-catchup                 │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 25 │ backup-rotation                │ default     │ N/A     │ fork    │ 0        │ 0      │ 1    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 33 │ backup-watcher                 │ default     │ N/A     │ fork    │ 12879    │ 28h    │ 0    │ online    │ 0%       │ 3.1mb    │ root     │ disabled │
+│ 9  │ bitrix-sdk-php-server          │ default     │ N/A     │ fork    │ 14545    │ 28h    │ 0    │ online    │ 0%       │ 9.2mb    │ root     │ disabled │
+│ 47 │ bmc-api                        │ default     │ 0.39.7  │ fork    │ 13084    │ 28h    │ 0    │ online    │ 0%       │ 31.6mb   │ root     │ disabled │
+│ 72 │ cmd-audit                      │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 65 │ code-archive                   │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 29 │ context-gc                     │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 28 │ context-heartbeat              │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 17 │ db-replicator                  │ default     │ N/A     │ fork    │ 12498    │ 28h    │ 0    │ online    │ 0%       │ 22.0mb   │ root     │ disabled │
+│ 64 │ disk-zone-codex                │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 24 │ docker-backup                  │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 42 │ docker-log-rotation            │ default     │ N/A     │ fork    │ 2326122  │ 4m     │ 0    │ online    │ 0%       │ 4.0mb    │ root     │ disabled │
+│ 67 │ forms-backup                   │ default     │ 3.0.0   │ fork    │ 13649    │ 28h    │ 0    │ online    │ 0%       │ 16.8mb   │ root     │ disabled │
+│ 71 │ forms-cert-sync                │ default     │ 3.0.0   │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 68 │ forms-gw-guard                 │ default     │ 3.0.0   │ fork    │ 0        │ 0      │ 1    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 73 │ forms-gw-guard-test            │ default     │ 3.0.0   │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 70 │ forms-reserve-probe            │ default     │ 3.0.0   │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 26 │ gdrive-token-check             │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 30 │ git-maintenance                │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 58 │ hh-cabinet                     │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 21 │ hh-cabinet-bridge              │ default     │ N/A     │ fork    │ 12559    │ 28h    │ 0    │ online    │ 0%       │ 3.3mb    │ root     │ disabled │
+│ 59 │ hh-cabinet-staging             │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 53 │ hh-dashboard-fastloop          │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 57 │ hh-hub-api                     │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 11 │ hh-import                      │ default     │ N/A     │ fork    │ 12346    │ 28h    │ 0    │ online    │ 0%       │ 12.9mb   │ root     │ disabled │
+│ 56 │ hh-litestream                  │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 55 │ hh-pipeline                    │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 23 │ hh-pipeline-prod               │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 12 │ hh-refetch                     │ default     │ N/A     │ fork    │ 12373    │ 28h    │ 0    │ online    │ 0%       │ 11.6mb   │ root     │ disabled │
+│ 54 │ hh-screening-monitor           │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 13 │ hh-token-refresh               │ default     │ N/A     │ fork    │ 12381    │ 28h    │ 0    │ online    │ 0%       │ 12.3mb   │ root     │ disabled │
+│ 22 │ hh-wal-checkpoint              │ default     │ N/A     │ fork    │ 0        │ 0      │ 1    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 10 │ hr-bot-v2                      │ default     │ N/A     │ fork    │ 2325202  │ 5m     │ 75   │ online    │ 0%       │ 68.5mb   │ root     │ disabled │
+│ 2  │ kp-landing-serve               │ default     │ N/A     │ fork    │ 3959432  │ 9h     │ 0    │ online    │ 0%       │ 10.9mb   │ root     │ disabled │
+│ 4  │ kpd-proxy                      │ default     │ 1.0.0   │ cluster │ 2326065  │ 4m     │ 0    │ online    │ 0%       │ 77.2mb   │ root     │ disabled │
+│ 7  │ load-governor                  │ default     │ N/A     │ fork    │ 12239    │ 28h    │ 0    │ online    │ 0%       │ 3.3mb    │ root     │ disabled │
+│ 5  │ margin-calc                    │ default     │ N/A     │ fork    │ 12230    │ 28h    │ 0    │ online    │ 0%       │ 9.0mb    │ root     │ disabled │
+│ 38 │ memory-updater                 │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 6  │ minio-sync-worker              │ default     │ N/A     │ fork    │ 2326071  │ 4m     │ 0    │ online    │ 0%       │ 3.4mb    │ root     │ disabled │
+│ 20 │ node-exporter                  │ default     │ N/A     │ fork    │ 2326092  │ 4m     │ 0    │ online    │ 0%       │ 18.7mb   │ root     │ disabled │
+│ 14 │ pdf-decoder                    │ default     │ 1.0.0   │ fork    │ 12430    │ 28h    │ 0    │ online    │ 0%       │ 34.7mb   │ root     │ disabled │
+│ 27 │ plan-lifecycle-manager         │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 18 │ pm2-api                        │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 34 │ pm2-conductor                  │ default     │ N/A     │ fork    │ 12886    │ 28h    │ 0    │ online    │ 0%       │ 3.4mb    │ root     │ disabled │
+│ 39 │ pm2-extended-metrics           │ default     │ N/A     │ fork    │ 2326106  │ 4m     │ 0    │ online    │ 0%       │ 3.3mb    │ root     │ disabled │
+│ 52 │ pm2-loop-guard                 │ default     │ N/A     │ fork    │ 13328    │ 28h    │ 0    │ online    │ 0%       │ 3.5mb    │ root     │ disabled │
+│ 46 │ pm2-reconcile-guard            │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 43 │ prometheus                     │ default     │ N/A     │ fork    │ 12990    │ 28h    │ 0    │ online    │ 0%       │ 64.4mb   │ root     │ disabled │
+│ 32 │ redis-backup                   │ default     │ N/A     │ fork    │ 2326102  │ 4m     │ 0    │ online    │ 0%       │ 3.4mb    │ root     │ disabled │
+│ 19 │ redis-exporter                 │ default     │ N/A     │ fork    │ 2326086  │ 4m     │ 0    │ online    │ 0%       │ 14.2mb   │ root     │ disabled │
+│ 8  │ redis-watchdog                 │ default     │ N/A     │ fork    │ 2326077  │ 4m     │ 0    │ online    │ 0%       │ 3.4mb    │ root     │ disabled │
+│ 63 │ repowise-watch-test-ui-chat    │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 35 │ sched-healthcheck              │ default     │ N/A     │ fork    │ 12909    │ 28h    │ 0    │ online    │ 0%       │ 3.1mb    │ root     │ disabled │
+│ 41 │ search-quality-report          │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 49 │ secrets-registry               │ default     │ N/A     │ fork    │ 0        │ 0      │ 1    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 45 │ security-scanner               │ default     │ 1.0.0   │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 50 │ server-backup                  │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 37 │ session-indexer                │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 36 │ session-merger                 │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 61 │ skill-search-health            │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 66 │ spec-sweep                     │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 15 │ transcription-panel            │ default     │ N/A     │ fork    │ 12465    │ 28h    │ 0    │ online    │ 0%       │ 11.3mb   │ root     │ disabled │
+│ 16 │ transcription-panel-dev        │ default     │ N/A     │ fork    │ 12486    │ 28h    │ 0    │ online    │ 0%       │ 11.4mb   │ root     │ disabled │
+│ 31 │ tx-cleanup                     │ default     │ N/A     │ fork    │ 0        │ 0      │ 0    │ waiting … │ 0%       │ 0b       │ root     │ disabled │
+│ 62 │ ui-chat-staging                │ default     │ N/A     │ fork    │ N/A      │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+│ 44 │ yandex-reviews-backend         │ default     │ 0.1.0   │ fork    │ 13024    │ 28h    │ 0    │ online    │ 0%       │ 27.5mb   │ root     │ disabled │
+└────┴────────────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+Modules
+┌────┬──────────────────────────────┬───────────────┬──────────┬──────────┬──────┬──────────┬──────────┬──────────┐
+│ id │ module                       │ version       │ pid      │ status   │ ↺    │ cpu      │ mem      │ user     │
+├────┼──────────────────────────────┼───────────────┼──────────┼──────────┼──────┼──────────┼──────────┼──────────┤
+│ 1  │ pm2-logrotate                │ 3.0.0         │ 892060   │ online   │ 12   │ 0%       │ 78.6mb   │ root     │
+│ 0  │ pm2-prometheus-exporter      │ 0.1.1         │ 11880    │ online   │ 0    │ 0%       │ 52.7mb   │ root     │
+└────┴──────────────────────────────┴───────────────┴──────────┴──────────┴──────┴──────────┴──────────┴──────────┘
+host metrics | cpu: 19.1% | ram usage: 41.5% | eth0: ⇓ 837kb/s ⇑ 162kb/s | disk: ⇓ 117kb/s ⇑ 2mb/s / 82.1%
