@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# yc-sku-verify (owner 2026-11-22): closes the 200 RUB/month loop without a human.
+# Daily: reads Moscow-date SKU report, computes 7-day average, projects a month.
+# If projection <= 200 -> closes dcfg-sctw with verbatim numbers; else appends a note. Idempotent.
+set -u
+
+ACC=${ACC:-dn2s45ih4vaq9nodg0sf}
+PROJ=${PROJ:-/root/workspaces/projects}
+BD=${BD:-/root/workspaces/tools/bin/bd}
+LOG=${LOG:-/root/workspaces/tools/logs/sku-verify.log}
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+
+day=$(TZ=Europe/Moscow date -d yesterday +%F)
+start=$(TZ=Europe/Moscow date -d '7 days ago' +%F)
+end="$day"
+
+query() { # start end
+  yc --profile default --retry 0 billing v1 consumption-core get-sku-usage-report "$ACC" \
+    --start-date "$1T00:00:00+03:00" --end-date "$2T23:59:59+03:00" \
+    --aggregation-period day --format json 2>/dev/null
+}
+
+day_json=$(query "$day" "$day") || { log "billing unavailable for $day; skip"; exit 0; }
+day_total=$(printf '%s' "$day_json" | jq -er '.expense.value' 2>/dev/null) || { log "unparsed day report; skip"; exit 0; }
+egress=$(printf '%s' "$day_json" | jq -er '[.entities_data[]? | select(.sku.name=="storage.api.network.inet.egress") | .expense.value | tonumber] | add // 0' 2>/dev/null || echo 0)
+
+week_json=$(query "$start" "$end") || { log "billing unavailable for week; skip"; exit 0; }
+week_total=$(printf '%s' "$week_json" | jq -er '.expense.value' 2>/dev/null) || { log "unparsed week report; skip"; exit 0; }
+
+avg=$(awk -v t="$week_total" 'BEGIN{printf "%.2f", t/7}')
+proj=$(awk -v a="$avg" 'BEGIN{printf "%.0f", a*30}')
+
+status=$("$BD" -C "$PROJ" show dcfg-sctw 2>/dev/null | head -1 || true)
+case "$status" in
+  *CLOSED*) log "sctw already closed; day=$day total=$day_total egress=$egress avg=$avg proj=$proj"; exit 0 ;;
+esac
+
+evidence="2026-11-22 automate: day $day total ${day_total} RUB, egress ${egress} RUB; 7-day avg ${avg} RUB/day; projection ${proj} RUB/month (target <=200). Source: yc billing get-sku-usage-report ${start}..${end} MSK."
+
+if [ "$proj" -le 200 ] 2>/dev/null; then
+  ( cd "$PROJ" && "$BD" close dcfg-sctw --reason "$evidence" >>"$LOG" 2>&1 ) || { log "bd close failed"; exit 1; }
+  log "CLOSED sctw: $evidence"
+else
+  ( cd "$PROJ" && "$BD" update dcfg-sctw --append-notes "$evidence" >>"$LOG" 2>&1 ) || log "bd note failed"
+  log "OPEN sctw: $evidence"
+fi
+exit 0

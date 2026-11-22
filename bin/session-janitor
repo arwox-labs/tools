@@ -9,6 +9,7 @@ DRY=0
 [ "${1:-}" = --dry-run ] && DRY=1
 
 IDLE_MIN=${IDLE_MIN:-15}
+MAX_AGE_MIN=${MAX_AGE_MIN:-90}
 LOOP_MIN=${LOOP_MIN:-10}
 LOG=${LOG:-/root/workspaces/tools/logs/session-janitor.log}
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
@@ -21,23 +22,25 @@ removed=0
 killed=0
 now=$(date +%s)
 
-while IFS=$'\t' read -r id parent idle; do
+while IFS=$'\t' read -r id parent created idle; do
   [ -n "${id:-}" ] && [ -n "${parent:-}" ] || continue
   [[ $id == ses_* ]] || continue
   case "${idle:-}" in ''|*[!0-9]*) continue ;; esac
+  case "${created:-}" in ''|*[!0-9]*) created=$idle ;; esac
   age=$(( now - idle ))
-  [ "$age" -gt $(( IDLE_MIN * 60 )) ] || continue
+  total=$(( now - created ))
+  if [ "$age" -le $(( IDLE_MIN * 60 )) ] && [ "$total" -le $(( MAX_AGE_MIN * 60 )) ]; then continue; fi
   if [ "$DRY" = 1 ]; then
-    log "would-remove $id parent=$parent idle=${age}s"
+    log "would-remove $id parent=$parent idle=${age}s age=${total}s"
   else
     if opencode api DELETE "/api/session/$id" >/dev/null 2>&1; then
-      log "removed $id parent=$parent idle=${age}s"
+      log "removed $id parent=$parent idle=${age}s age=${total}s"
       removed=$((removed + 1))
     else
-      log "remove-failed $id parent=$parent idle=${age}s"
+      log "remove-failed $id parent=$parent idle=${age}s age=${total}s"
     fi
   fi
-done < <(printf '%s' "$sessions" | jq -r '.data[]? | [.id, (.parentID // ""), ((.time.idle // .time.updated // 0) / 1000 | floor)] | @tsv' 2>/dev/null)
+done < <(printf '%s' "$sessions" | jq -r '.data[]? | [.id, (.parentID // ""), ((.time.created // .time.updated // 0) / 1000 | floor), ((.time.idle // .time.updated // 0) / 1000 | floor)] | @tsv' 2>/dev/null)
 
 for p in $(pgrep -f 'seq 1 [0-9]' 2>/dev/null); do
   et=$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')
