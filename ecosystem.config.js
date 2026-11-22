@@ -25,6 +25,23 @@ const formsBackupEnv = loadEnvFile('/root/workspaces/secrets/system/infra/yc-ser
 module.exports = {
   apps: [
     {
+      name: 'yc-sku-verify',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/bin/yc-sku-verify',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 2,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '5 9 * * *',
+      error_file: '/root/.pm2/logs/yc-sku-verify-error.log',
+      out_file: '/root/.pm2/logs/yc-sku-verify-out.log'
+    },
+    {
       name: 'session-janitor',
       time: true,
       merge_logs: true,
