@@ -327,6 +327,19 @@ if ! flock -n 9; then
   log "backup already running; duplicate invocation skipped"
   exit 0
 fi
+backup_slot=$(( $(date +%s) / 86400 ))
+slot_file="$STAGE/.server-backup.slot"
+if [ -f "$slot_file" ]; then
+  read -r previous_slot previous_status <"$slot_file" || fail slot-state 1
+  [[ $previous_slot =~ ^[0-9]+$ && $previous_status =~ ^(attempt|ok)$ ]] || fail slot-state 1
+  if [ "$previous_slot" -ge "$backup_slot" ]; then
+    log "backup slot=$previous_slot status=$previous_status; duplicate invocation skipped"
+    [ "$previous_status" = ok ] && exit 0
+    fail duplicate-slot 75
+  fi
+fi
+# Record before external effects: an interrupted attempt must not run twice.
+printf '%s attempt\n' "$backup_slot" >"$slot_file.next" && mv -f -- "$slot_file.next" "$slot_file" || fail slot-state 1
 
 # Снимок cron и свежий docker-бэкап.
 crontab -l >"$STAGE/crontab-root.txt" 2>>"$LOG" || :
@@ -380,6 +393,8 @@ paths=(
   /root/.mc /root/.docker /root/.gnupg /root/.beads /root/.dolt /root/.opencode
   /root/.agents /root/ecosystem.config.js /var/www /opt/actions-runner/.runner
   /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos /home/gitmirror/archived-repos
+  # Y3: единственная копия refs миграции org→labs (bd dcfg-48s4h.3) — вне исключённого .tmp.
+  /root/workspaces/projects/.tmp/repo-migration-backups
 )
 paths+=(/root/.tmux*)
 [ -d /var/lib/docker/volumes ] && [ ! -L /var/lib/docker/volumes ] || fail docker-inventory 1
@@ -433,6 +448,29 @@ timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" backup --json --tag server --g
   --exclude '/root/.codex/state_*.sqlite*' \
   --exclude /root/.gemini/tmp --exclude /root/.kimi-code/bin --exclude /root/.kimi-code/cache \
   --exclude /root/.kimi-code/logs --exclude /root/.kimi-code/sessions --exclude /root/.kimi-code/search-index \
+  --exclude '*/.worktrees' --exclude /root/workspaces/projects/.agent-work \
+  --exclude /root/workspaces/projects/.tmp/hh-clean \
+  --exclude /root/workspaces/projects/.tmp/cs-check \
+  --exclude /root/workspaces/projects/.tmp/cs-clean \
+  --exclude /root/workspaces/projects/.tmp/hh-clean-work \
+  --exclude /root/workspaces/projects/.tmp/mplan-docs \
+  --exclude /root/workspaces/projects/.tmp/sanitize-dev \
+  --exclude '/root/workspaces/projects/.tmp/*.log' \
+  --exclude '/root/workspaces/projects/.tmp/dump_session.py' \
+  --exclude '/root/workspaces/projects/.tmp/gitlinks.txt' \
+  --exclude '/root/workspaces/projects/.tmp/live.txt' \
+  --exclude '/root/workspaces/projects/.tmp/mirror.txt' \
+  --exclude '/root/workspaces/projects/.tmp/r1.tsv' \
+  --exclude '/root/workspaces/projects/.tmp/r2.tsv' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s1.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s2.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s3.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s4.txt' \
+  --exclude '/root/workspaces/projects/.tmp/sess-s5.txt' \
+  --exclude '/root/workspaces/projects/.tmp/t-new.txt' \
+  --exclude '/root/workspaces/projects/.tmp/t-old.txt' \
+  --exclude '/root/workspaces/projects/.tmp/opencode-jsonc-20261104.snapshot' \
+  --exclude '/root/workspaces/projects/.tmp/opencode-jsonc-20261104b.snapshot' \
   --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
   "${backup_paths[@]}" >"$backup_json" 2>>"$LOG"
 backup_rc=$?
@@ -451,28 +489,49 @@ for path in /var/lib/docker/volumes "${docker_upper_dirs[@]}"; do
 done
 log "backup snapshot=$snapshot_id"
 
-# Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
+# Y1: сверка зеркала. Воскресенье — полный `restic ls --recursive` по дереву S3;
+# остальные дни — число репозиториев из top-level metadata последнего снимка (без чтения данных).
+# A5 (owner 22.11): сверка зеркала 1x/сут (03:30) вместо каждого прохода - egress-рычаг.
+if [ "$run_hour" = 03 ]; then
 mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
-mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
-  | grep -Ec '(\.git)?/HEAD$')
-log "mirror-check s3=$mirror_s3 local=$mirror_local"
-if [ "$mirror_s3" -lt "$mirror_local" ]; then
-  fail mirror-check "$((mirror_local - mirror_s3))"
+  if [ "$(date +%u)" = 7 ]; then
+    mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
+      | grep -Ec '(\.git)?/HEAD$')
+  else
+    mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
+      | grep -cE '/[^/]+\.git/?$')
+  fi
+  log "mirror-check s3=$mirror_s3 local=$mirror_local"
+  if [ "$mirror_s3" -lt "$mirror_local" ]; then
+    fail mirror-check "$((mirror_local - mirror_s3))"
+  fi
+else
+  log "mirror-check=skip (не 03:30)"
 fi
 
-run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-hourly 48 --keep-daily 14 --prune --retry-lock 30m
-forget_rc=$?
-case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
+# A5: удаление и перепаковка только на суточном проходе (после drill в том же проходе).
+forget_rc=skip
+if [ "$run_hour" = 03 ]; then
+  forget_args=(--prune --max-repack-size 512M)
+  run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-within 24h --keep-daily 3 --keep-weekly 2 "${forget_args[@]}" --retry-lock 30m
+  forget_rc=$?
+  case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
+else
+  log "forget=skip (не 03:30)"
+fi
 
 check_rc=skip
-if [ "$run_hour" = 03 ]; then
+# Y2b (owner 21.11): метаданные ЕЖЕНЕДЕЛЬНО (вс 03:30); данные 1/4 — 1-е вс месяца.
+if [ "$run_hour" = 03 ] && [ "$(date +%u)" = 7 ]; then
   check_args=()
-  [ "$(date +%u)" = 7 ] && check_args=(--read-data-subset="$(( ($(date +%-d) - 1) / 7 % 4 + 1 ))/4")
+  if [ "$(date +%-d)" -le 7 ]; then
+    check_args=(--read-data-subset=1/4)
+  fi
   run_step check "${NICE_PREFIX[@]}" "$RESTIC" check "${check_args[@]}" --retry-lock 30m
   check_rc=$?
   case "$check_rc" in 0|3) ;; *) fail check "$check_rc" ;; esac
 else
-  log "check=skip (не 03:30)"
+  log "check=skip (не вс 03:30)"
 fi
 if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   DRILL=/tmp/restic-drill
@@ -499,23 +558,22 @@ if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   [ "$(date +%-d)" -le 7 ] && drill
 fi
 
-stats_output=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" stats --mode raw-data latest --tag server --retry-lock 30m 2>&1)
-stats_rc=$?
-printf '%s\n' "$stats_output" >>"$LOG"
-log "stats rc=$stats_rc"
-stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/Total Size:/ {print $2; exit}')
-case "$stats_rc" in 0|3) ;; *) fail stats "$stats_rc" ;; esac
+# Y1: размер снимка берём из summary в backup.jsonl, без `restic stats --mode raw-data`.
+stats_size=$(jq -er 'select(.message_type == "summary") | .total_bytes_processed | select(. != null) | tostring' "$backup_json" 2>>"$LOG") \
+  || { log "stats size unavailable"; stats_size=unknown; }
 log "SUMMARY docker_rc=$docker_rc images_rc=$images_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
-docker_retention_rc=0
-if [ "${#docker_snapshots[@]}" -gt 0 ]; then
+# A5: docker-recovery drill + retention 1x/сут (03:30) вместо каждого прохода.
+docker_retention_rc=skip
+if [ "$run_hour" = 03 ] && [ "${#docker_snapshots[@]}" -gt 0 ]; then
   docker_recovery_and_retention "$snapshot_id" "$docker_proof"
   docker_retention_rc=$?
 fi
 log "docker-retention rc=$docker_retention_rc"
-[ "$docker_retention_rc" -eq 0 ] || fail docker-retention "$docker_retention_rc"
+case "$docker_retention_rc" in 0|skip) ;; *) fail docker-retention "$docker_retention_rc" ;; esac
 [ "$images_rc" -eq 0 ] || fail docker-images "$images_rc"
-date +%s >"$LAST_OK"
+date +%s >"$LAST_OK" || fail last-ok 1
+printf '%s ok\n' "$backup_slot" >"$slot_file.next" && mv -f -- "$slot_file.next" "$slot_file" || fail slot-state 1
 if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   send_telegram "✅ server-backup: неделя ок, snapshot latest, size ${stats_size:-unknown}, drill ok"
 fi
