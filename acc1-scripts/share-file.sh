@@ -22,17 +22,17 @@ for var in MINIO_ACCESS_KEY MINIO_SECRET_KEY KUTT_API_KEY; do
 done
 
 # Configuration
-# Local alias for fast upload via localhost
-MINIO_ALIAS_LOCAL="b244minio"
-# Resolve MinIO container IP dynamically (IP drifts on container recreate).
-# Fallback: public endpoint via NPM (proxies to docker alias "minio", IP-independent).
-MINIO_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' minio 2>/dev/null)
-if [ -n "$MINIO_IP" ]; then
-    MINIO_ENDPOINT_LOCAL="http://${MINIO_IP}:9000"
-else
-    MINIO_ENDPOINT_LOCAL="https://io.b244.ru"
-fi
+# MinIO work runs inside the container over localhost: no docker IP, no host mc alias,
+# credentials only from the container env (MINIO_ROOT_USER / MINIO_ROOT_PASSWORD).
+MINIO_CONTAINER="minio"
 MINIO_BUCKET="files"
+
+# minio_mc <mc args...> — one-shot mc inside the container, "local" alias on localhost:9000.
+minio_mc() {
+    docker exec -i "$MINIO_CONTAINER" sh -c '
+        mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 || exit 4
+        exec mc "$@"' sh "$@"
+}
 
 KUTT_API="http://localhost:3000"
 KUTT_DOMAIN="b244.ru"
@@ -342,38 +342,36 @@ esac
 
 echo -e "${YELLOW}[1/4] Configuring MinIO client...${NC}"
 
-# Configure MinIO alias (local endpoint for fast upload)
-mc alias set "$MINIO_ALIAS_LOCAL" "$MINIO_ENDPOINT_LOCAL" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" --api S3v4 > /dev/null 2>&1
-
-# Fail fast if endpoint is unreachable (don't confuse it with a missing bucket)
-if ! mc ready "$MINIO_ALIAS_LOCAL" > /dev/null 2>&1; then
-    echo -e "${RED}Error: MinIO unreachable at $MINIO_ENDPOINT_LOCAL${NC}"
+# Fail fast if the container endpoint is unreachable (don't confuse it with a missing bucket)
+if ! minio_mc ready local > /dev/null 2>&1; then
+    echo -e "${RED}Error: MinIO unreachable in container '$MINIO_CONTAINER'${NC}"
     exit 1
 fi
 
 # Check if bucket exists, create if not
-if ! mc ls "$MINIO_ALIAS_LOCAL/$MINIO_BUCKET" > /dev/null 2>&1; then
+if ! minio_mc ls "local/$MINIO_BUCKET" > /dev/null 2>&1; then
     echo -e "${YELLOW}Creating bucket: $MINIO_BUCKET${NC}"
-    mc mb "$MINIO_ALIAS_LOCAL/$MINIO_BUCKET" > /dev/null 2>&1
+    minio_mc mb "local/$MINIO_BUCKET" > /dev/null 2>&1
     # Set public read access on new bucket
-    mc anonymous set download "$MINIO_ALIAS_LOCAL/$MINIO_BUCKET" > /dev/null 2>&1
+    minio_mc anonymous set download "local/$MINIO_BUCKET" > /dev/null 2>&1
 fi
 
 echo -e "${YELLOW}[2/4] Uploading file to MinIO...${NC}"
 
-# Upload file via local endpoint (faster)
+# Upload file by streaming it into the container over localhost
 # For web-viewable files, set Content-Type attribute for proper browser rendering
 FINAL_NAME="$UNIQUE_NAME"
 touch "/tmp/.minio-allow-overwrite-${FINAL_NAME}" 2>/dev/null
 CACHE_ATTRS="Cache-Control=no-cache, no-store, must-revalidate;Pragma=no-cache"
 if [ "$USE_PUBLIC" = true ] && [ -n "$CONTENT_TYPE" ]; then
     echo -e "${YELLOW}  → Web-viewable file detected: $EXT_LOWER (Content-Type: $CONTENT_TYPE)${NC}"
-    mc cp --attr "Content-Type=$CONTENT_TYPE;$CACHE_ATTRS" "$FILE_PATH" "$MINIO_ALIAS_LOCAL/$MINIO_BUCKET/$UNIQUE_NAME" > /dev/null 2>&1
+    # mc pipe splits --attr on ';', so "; charset" is written without the space
+    UPLOAD_ATTRS="Content-Type=${CONTENT_TYPE//; /;};$CACHE_ATTRS"
 else
-    mc cp --attr "$CACHE_ATTRS" "$FILE_PATH" "$MINIO_ALIAS_LOCAL/$MINIO_BUCKET/$UNIQUE_NAME" > /dev/null 2>&1
+    UPLOAD_ATTRS="$CACHE_ATTRS"
 fi
 
-if [ $? -ne 0 ]; then
+if ! minio_mc pipe --quiet --attr "$UPLOAD_ATTRS" "local/$MINIO_BUCKET/$UNIQUE_NAME" < "$FILE_PATH" >/dev/null; then
     echo -e "${RED}Error: Failed to upload file to MinIO${NC}"
     exit 1
 fi

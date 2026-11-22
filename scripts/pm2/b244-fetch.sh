@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-MINIO_ALIAS="b244minio"
+MINIO_CONTAINER="minio"
 MINIO_BUCKET="files"
 PUBLIC_URL_BASE="https://io.b244.ru/files"
 SCRIPT_NAME="$(basename "$0")"
@@ -80,12 +80,29 @@ TMPFILE=$(mktemp /tmp/b244fetch_XXXXXX)
 trap 'rm -f "$TMPFILE"' EXIT
 
 if [[ "$FETCH_VIA" == "mc" ]]; then
-    if ! mc cp "${MINIO_ALIAS}/${MINIO_BUCKET}/${FILENAME}" "$TMPFILE" >/dev/null 2>&1; then
-        echo "ERROR: File not found in MinIO: ${MINIO_ALIAS}/${MINIO_BUCKET}/${FILENAME}" >&2
-        echo "Available files matching pattern:" >&2
-        mc ls "${MINIO_ALIAS}/${MINIO_BUCKET}/" 2>/dev/null | grep -F "$(basename "$FILENAME" .html)" || true
+    # Read inside the MinIO container over localhost: no docker IP, no host mc
+    # alias. Credentials come from the container env, never from the host.
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "ERROR: docker CLI not available; cannot reach MinIO container '${MINIO_CONTAINER}'" >&2
         exit 1
     fi
+    MC_ERR=$(docker exec -e B244_NAME="$FILENAME" -e B244_BUCKET="$MINIO_BUCKET" "$MINIO_CONTAINER" \
+        sh -c 'set -e
+            : "${MINIO_ROOT_USER:?MINIO_ROOT_USER missing in container}" "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD missing in container}"
+            command -v mc >/dev/null 2>&1 || { echo "mc binary not found inside container" >&2; exit 3; }
+            mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 \
+                || { echo "mc alias set local http://localhost:9000 failed" >&2; exit 4; }
+            exec mc cat "local/${B244_BUCKET}/${B244_NAME}"' 2>&1 >"$TMPFILE") || {
+        echo "ERROR: File not found in MinIO: ${MINIO_BUCKET}/${FILENAME} (link may have expired or the object was removed)" >&2
+        if [[ -n "$MC_ERR" ]]; then
+            echo "  detail: $(printf '%s' "$MC_ERR" | tr '\n' ' ' | cut -c1-300)" >&2
+        fi
+        echo "Available files matching pattern:" >&2
+        docker exec "$MINIO_CONTAINER" sh -c '
+            mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 || exit 0
+            mc ls "local/files/" 2>/dev/null' | grep -F "$(basename "$FILENAME" .html)" >&2 || true
+        exit 1
+    }
 else
     if ! curl -sL --max-time 30 -o "$TMPFILE" "${FETCH_URL}"; then
         echo "ERROR: Failed to download: ${FETCH_URL}" >&2

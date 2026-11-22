@@ -14,7 +14,7 @@ if [[ $rc == 0 && $out =~ ^https://b244\.ru/[A-Za-z0-9]+$ && $(wc -l <<<"$out") 
   h=$(/usr/bin/curl -s -o /dev/null -w "%{http_code} %{size_download}" "$url")
   download_code=${h%% *}; download_size=${h#* }
   key=$(cat "${SHARE_KUTT_KEY_FILE:-/root/workspaces/system/services/short-links/secret}" 2>/dev/null || true)
-  sk=$(jq -r '.aliases.b244minio.secretKey // empty' ~/.mc/config.json 2>/dev/null || true)
+  sk=$(docker exec minio sh -c 'printf %s "${MINIO_ROOT_PASSWORD:-}"' 2>/dev/null || true)
   leak=0; [[ -n $key ]] && grep -Fq -- "$key" "$all" && leak=1
   [[ -n $sk ]] && grep -Fq -- "$sk" "$all" && leak=1
   if [[ $code =~ ^30[1278]$ && $url == https://io.b244.ru/files/* && $download_code == 200 && $download_size == $(stat -c %s "$f") && $leak == 0 ]]; then
