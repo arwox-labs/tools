@@ -335,6 +335,15 @@ if grep -q '<docker> <image> <save> <sha256:aaaaaaaa' "$IMG_ARGV" && ! grep -q '
 fi
 
 
+# Y2b: будний 03:30 не вызывает restic check (метаданные только по воскресеньям).
+: >"$CHECK_LOG"; : >"$SB_LOG"
+export RUN_HOUR=03 STUB_FORCE_WEEKDAY=1
+run_backup "$TMP/ls-drill.txt" "$TMP/notify-empty.env" "$TMP/argv-g3-pre.txt" 2>/dev/null || true
+unset RUN_HOUR STUB_FORCE_WEEKDAY
+if [ -s "$CHECK_LOG" ]; then
+  echo "[Y2b] будний прогон вызвал restic check (должен быть check=skip)"; cat "$CHECK_LOG"; exit 1
+fi
+
 # Host integration uses published backup archives and requires an explicit opt-in.
 if [ "${STUB_HOST_INTEGRATION:-0}" != 1 ] || [ ! -w /root/backups/docker ] || [ -e /root/.codex/DELETE-APPROVED.json ]; then
   # C6 (эмпирика на локальном restic-репо) выполняется всегда: blanket --exclude .tmp теряет
@@ -402,6 +411,15 @@ run_backup "$TMP/ls-drill.txt" "$TMP/notify-empty.env" "$TMP/argv-g2.txt"
 unset RUN_HOUR STUB_FORCE_SUNDAY STUB_FORCE_DOM
 if grep -q '<--read-data-subset> <1/4>' "$CHECK_LOG"; then PASS=$((PASS+1)); else
   echo "[g2] в 1-е вс месяца check не получил --read-data-subset=1/4"; cat "$CHECK_LOG"; exit 1
+fi
+
+# (g3) Y2b: будний 03:30 → check НЕ вызывается вовсе (метаданные только по воскресеньям).
+: >"$CHECK_LOG"; : >"$SB_LOG"
+export RUN_HOUR=03 STUB_FORCE_WEEKDAY=1
+run_backup "$TMP/ls-drill.txt" "$TMP/notify-empty.env" "$TMP/argv-g3.txt"
+unset RUN_HOUR STUB_FORCE_WEEKDAY
+if [ -s "$CHECK_LOG" ]; then PASS=$((PASS+1)); else
+  echo "[g3] будний прогон вызвал restic check (должен быть check=skip)"; cat "$CHECK_LOG"; exit 1
 fi
 
 # (h): воскресенье 03, HEAD git-каталога в восстановленной копии отличается от живого ->
