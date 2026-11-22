@@ -491,24 +491,34 @@ log "backup snapshot=$snapshot_id"
 
 # Y1: сверка зеркала. Воскресенье — полный `restic ls --recursive` по дереву S3;
 # остальные дни — число репозиториев из top-level metadata последнего снимка (без чтения данных).
-mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
-if [ "$(date +%u)" = 7 ]; then
-  mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
-    | grep -Ec '(\.git)?/HEAD$')
+# A5 (owner 22.11): сверка зеркала 1x/сут (03:30) вместо каждого прохода - egress-рычаг.
+if [ "$run_hour" = 03 ]; then
+  mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
+  if [ "$(date +%u)" = 7 ]; then
+    mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
+      | grep -Ec '(\.git)?/HEAD$')
+  else
+    mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
+      | grep -cE '/[^/]+\.git/?$')
+  fi
+  log "mirror-check s3=$mirror_s3 local=$mirror_local"
+  if [ "$mirror_s3" -lt "$mirror_local" ]; then
+    fail mirror-check "$((mirror_local - mirror_s3))"
+  fi
 else
-  mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
-    | grep -cE '/[^/]+\.git/?$')
-fi
-log "mirror-check s3=$mirror_s3 local=$mirror_local"
-if [ "$mirror_s3" -lt "$mirror_local" ]; then
-  fail mirror-check "$((mirror_local - mirror_s3))"
+  log "mirror-check=skip (не 03:30)"
 fi
 
-forget_args=()
-[ "$run_hour" = 03 ] && forget_args=(--prune --max-repack-size 512M)
-run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-within 24h --keep-daily 3 --keep-weekly 2 "${forget_args[@]}" --retry-lock 30m
-forget_rc=$?
-case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
+# A5: удаление и перепаковка только на суточном проходе (после drill в том же проходе).
+forget_rc=skip
+if [ "$run_hour" = 03 ]; then
+  forget_args=(--prune --max-repack-size 512M)
+  run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-within 24h --keep-daily 3 --keep-weekly 2 "${forget_args[@]}" --retry-lock 30m
+  forget_rc=$?
+  case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
+else
+  log "forget=skip (не 03:30)"
+fi
 
 check_rc=skip
 # Y2b (owner 21.11): метаданные ЕЖЕНЕДЕЛЬНО (вс 03:30); данные 1/4 — 1-е вс месяца.
@@ -553,13 +563,14 @@ stats_size=$(jq -er 'select(.message_type == "summary") | .total_bytes_processed
   || { log "stats size unavailable"; stats_size=unknown; }
 log "SUMMARY docker_rc=$docker_rc images_rc=$images_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
-docker_retention_rc=0
-if [ "${#docker_snapshots[@]}" -gt 0 ]; then
+# A5: docker-recovery drill + retention 1x/сут (03:30) вместо каждого прохода.
+docker_retention_rc=skip
+if [ "$run_hour" = 03 ] && [ "${#docker_snapshots[@]}" -gt 0 ]; then
   docker_recovery_and_retention "$snapshot_id" "$docker_proof"
   docker_retention_rc=$?
 fi
 log "docker-retention rc=$docker_retention_rc"
-[ "$docker_retention_rc" -eq 0 ] || fail docker-retention "$docker_retention_rc"
+case "$docker_retention_rc" in 0|skip) ;; *) fail docker-retention "$docker_retention_rc" ;; esac
 [ "$images_rc" -eq 0 ] || fail docker-images "$images_rc"
 date +%s >"$LAST_OK" || fail last-ok 1
 printf '%s ok\n' "$backup_slot" >"$slot_file.next" && mv -f -- "$slot_file.next" "$slot_file" || fail slot-state 1
