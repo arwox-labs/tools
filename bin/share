@@ -10,18 +10,19 @@ candidate=$(realpath -m -- "$file")
 file=$(realpath "$file")
 name="$(date +%Y%m%d-%H%M%S)-$(basename "$file")"
 public="https://io.b244.ru/files/$name"
-ak=$(jq -r '.aliases.b244minio.accessKey // empty' ~/.mc/config.json 2>/dev/null || true)
-sk=$(jq -r '.aliases.b244minio.secretKey // empty' ~/.mc/config.json 2>/dev/null || true)
-[[ -n $ak && -n $sk ]] || { echo 'share: minio credentials unavailable' >&2; exit 4; }
-ip=$(timeout 5 docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' minio 2>/dev/null || true)
-host=${ip:+http://$ip:9000}; host=${host:-https://io.b244.ru}
-export MC_HOST_share="${host%%://*}://$ak:$sk@${host#*://}"
+command -v docker >/dev/null 2>&1 || { echo 'share: docker unavailable' >&2; exit 4; }
 case $file in
   *.html) ct='text/html; charset=utf-8' ;; *.md|*.txt|*.log|*.csv) ct='text/plain; charset=utf-8' ;;
   *.json) ct=application/json ;; *) ct=$(file --mime-type -b "$file") ;;
 esac
-# ponytail: mc's native env alias avoids a mutable alias and credential argv.
-timeout "${SHARE_TIMEOUT:-120}" mc cp --attr "Content-Type=$ct;Cache-Control=no-store" "$file" "share/files/$name" >/dev/null 2>&1 || { echo 'share: minio upload failed' >&2; exit 4; }
+# ponytail: upload streams inside the minio container over localhost — no docker IP, no host mc
+# alias, credentials only from the container env (MINIO_ROOT_USER / MINIO_ROOT_PASSWORD).
+# mc pipe splits --attr on ';', so "; charset" is written without the space.
+timeout "${SHARE_TIMEOUT:-120}" docker exec -i -e SHARE_TARGET="files/$name" \
+  -e SHARE_ATTR="Content-Type=${ct//; /;};Cache-Control=no-store" minio sh -c \
+  'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 \
+    && exec mc pipe --quiet --attr "$SHARE_ATTR" "local/$SHARE_TARGET"' <"$file" >/dev/null \
+  || { echo 'share: minio upload failed' >&2; exit 4; }
 hdr=$(mktemp); payload=$(mktemp); chmod 600 "$hdr" "$payload"; trap 'rm -f "$hdr" "$payload"' EXIT
 keyfile=${SHARE_KUTT_KEY_FILE:-/root/workspaces/system/services/short-links/secret}
 if [[ ! -s $keyfile ]]; then
