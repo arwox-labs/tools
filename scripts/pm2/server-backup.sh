@@ -511,17 +511,17 @@ forget_rc=$?
 case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
 check_rc=skip
-if [ "$run_hour" = 03 ]; then
-  # Y2: будни/суббота — только метаданные; воскресенье — read-data, 1-е вс месяца ~1/4 данных.
+# Y2b (owner 21.11): метаданные ЕЖЕНЕДЕЛЬНО (вс 03:30); данные 1/4 — 1-е вс месяца.
+if [ "$run_hour" = 03 ] && [ "$(date +%u)" = 7 ]; then
   check_args=()
-  if [ "$(date +%u)" = 7 ] && [ "$(date +%-d)" -le 7 ]; then
+  if [ "$(date +%-d)" -le 7 ]; then
     check_args=(--read-data-subset=1/4)
   fi
   run_step check "${NICE_PREFIX[@]}" "$RESTIC" check "${check_args[@]}" --retry-lock 30m
   check_rc=$?
   case "$check_rc" in 0|3) ;; *) fail check "$check_rc" ;; esac
 else
-  log "check=skip (не 03:30)"
+  log "check=skip (не вс 03:30)"
 fi
 if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   DRILL=/tmp/restic-drill
