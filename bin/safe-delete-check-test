@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# safe-delete check <path>… — red-phase acceptance test (T1..T6).
+# Style: AAA, one line per case: T<n> PASS|FAIL: <detail>, final "итог: PASS n/6".
+# Runs only against this worktree; all mutable state (BK) is redirected to a temp dir,
+# so the real /root/workspaces/projects/.agent-work/backup is never written.
+set -uo pipefail
+export GIT_CONFIG_NOSYSTEM=1
+export SAFE_DELETE_GH=false
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+B="$repo/bin/safe-delete"
+# T1 must be able to prove "в разрешённом корне": the roots list is the worktree itself.
+export SAFE_DELETE_ROOTS="$repo"
+d=$(mktemp -d /tmp/safe-delete-check.XXXXXX)
+export SAFE_DELETE_BK="$d/bk"
+trap 'rm -rf "$d"' EXIT
+ok=0; fail=0
+pass(){ printf 'T%s PASS: %s\n' "$1" "$2"; ok=$((ok+1)); }
+bad(){ printf 'T%s FAIL: %s\n' "$1" "$2"; fail=$((fail+1)); }
+# --- ARRANGE (shared) ------------------------------------------------------
+mkdir -p "$d/out"
+cd "$repo" || exit 1
+
+# --- T1: positive, path inside a allowed root -> 0 + "ok:" -----------------
+# ARRANGE
+t1in="$repo/bin/safe-delete"
+# ACT
+t1out=$("$B" check "$t1in" 2>"$d/out/t1.err"); t1rc=$?
+t1err=$(cat "$d/out/t1.err")
+# ASSERT
+if [[ $t1rc == 0 && $t1out == *'ok:'* ]]; then
+  pass 1 "rc=0 stdout=$(printf %q "$t1out")"
+else
+  bad 1 "rc=$t1rc expected rc=0 and 'ok:' in stdout; stdout=$(printf %q "$t1out") stderr=$(printf %q "$t1err")"
+fi
+
+# --- T2: negative, outside every root -> 2 + "refused:" -------------------
+# ARRANGE
+t2in=/etc/hosts
+# ACT
+t2out=$("$B" check "$t2in" 2>"$d/out/t2.err"); t2rc=$?
+t2err=$(cat "$d/out/t2.err")
+# ASSERT
+if [[ $t2rc == 2 && $t2err == *'refused:'* ]]; then
+  pass 2 "rc=2 stderr=$(printf %q "$t2err")"
+else
+  bad 2 "rc=$t2rc expected rc=2 and 'refused:' in stderr; stderr=$(printf %q "$t2err") stdout=$(printf %q "$t2out")"
+fi
+
+# --- T3: negative, forbidden "secrets" segment -> 2, no secret value ------
+# ARRANGE (a) the path named by the criterion; (b) a canary fixture under a temp
+# root, because the real file must not be read (ONE PLACE LAW) — the canary is
+# what actually proves that no value is echoed.
+t3real=/root/workspaces/secrets/x.env
+t3r="$d/t3root"; mkdir -p "$t3r/secrets"
+t3canary='CANARY-VALUE-DO-NOT-PRINT-7f3a'
+printf 'PASSWORD=%s\n' "$t3canary" > "$t3r/secrets/x.env"
+# ACT
+t3out=$("$B" check "$t3real" 2>"$d/out/t3.err"); t3rc=$?
+t3err=$(cat "$d/out/t3.err")
+t3bout=$(SAFE_DELETE_ROOTS="$t3r" "$B" check "$t3r/secrets/x.env" 2>&1); t3brc=$?
+# ASSERT
+if [[ $t3rc == 2 && $t3err == *'refused:'* && -z $t3out \
+      && $t3brc == 2 && $t3bout == *'refused:'* && $t3bout != *"$t3canary"* ]]; then
+  pass 3 "rc=2 stderr=$(printf %q "$t3err") canary-leak=no"
+else
+  bad 3 "real: rc=$t3rc expected 2 + 'refused:' + empty stdout, got stderr=$(printf %q "$t3err") stdout=$(printf %q "$t3out"); canary: rc=$t3brc output=$(printf %q "$t3bout") canary_leaked=$([[ $t3bout == *"$t3canary"* ]] && echo yes || echo no)"
+fi
+
+# --- T4: negative, no argument -> 2 + "usage" ------------------------------
+# ARRANGE (no path)
+# ACT
+t4out=$("$B" check 2>&1); t4rc=$?
+# ASSERT
+if [[ $t4rc == 2 && $t4out == *usage* ]]; then
+  pass 4 "rc=2 output=$(printf %q "$t4out")"
+else
+  bad 4 "rc=$t4rc expected rc=2 and 'usage'; output=$(printf %q "$t4out")"
+fi
+
+# --- T5: idempotent + no mutation of bin/ and no new ledger/inventory -----
+# ARRANGE
+t5bin_before=$(ls -la "$repo/bin")
+t5state_before=$(find /tmp -maxdepth 4 \( -name 'ledger*' -o -name 'inventory*' \) -printf '%p\t%s\t%T@\n' 2>/dev/null | sort)
+# ACT
+t5a=$("$B" check "$t1in" 2>&1); t5arc=$?
+t5b=$("$B" check "$t1in" 2>&1); t5brc=$?
+t5bin_after=$(ls -la "$repo/bin")
+t5state_after=$(find /tmp -maxdepth 4 \( -name 'ledger*' -o -name 'inventory*' \) -printf '%p\t%s\t%T@\n' 2>/dev/null | sort)
+# ASSERT
+t5d_state=$(diff <(printf '%s\n' "$t5state_before") <(printf '%s\n' "$t5state_after"))
+if [[ $t5arc == 0 && $t5brc == 0 && $t5a == "$t5b" && $t5bin_before == "$t5bin_after" && -z $t5d_state ]]; then
+  pass 5 "rc a/b=$t5arc/$t5brc identical_output=yes bin_unchanged=yes new_ledger_or_inventory=none"
+else
+  bad 5 "rc a/b=$t5arc/$t5brc identical_output=$([[ $t5a == "$t5b" ]] && echo yes || echo no); bin_unchanged=$([[ $t5bin_before == "$t5bin_after" ]] && echo yes || echo no); new_state=$(printf %q "$t5d_state"); out=$(printf %q "$t5a")"
+fi
+
+# --- T6: regression — --help lists check, and `tmp` still works ------------
+# ARRANGE
+t6scratch=/tmp/opencode/sd-test-scratch.txt
+printf 'scratch for T6\n' > "$t6scratch"
+# ACT
+t6help=$("$B" --help 2>&1); t6hrc=$?
+t6out=$("$B" tmp "$t6scratch" 2>&1); t6rc=$?
+# ASSERT
+if [[ $t6hrc == 0 && $t6help == *check* && $t6rc == 0 && ! -e $t6scratch ]]; then
+  pass 6 "help rc=0 usage_has_check=yes tmp rc=0 file_gone=yes tmp_out=$(printf %q "$t6out")"
+else
+  bad 6 "help rc=$t6hrc usage_has_check=$([[ $t6help == *check* ]] && echo yes || echo no); tmp rc=$t6rc file_exists=$([[ -e $t6scratch ]] && echo yes || echo no) tmp_out=$(printf %q "$t6out") help_usage=$(printf %q "$t6help")"
+fi
+rm -f -- "$t6scratch"
+
+# --- SUMMARY --------------------------------------------------------------
+echo "итог: PASS $ok/6"
+[[ $fail == 0 ]]

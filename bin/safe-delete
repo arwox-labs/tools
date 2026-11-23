@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] init [--fast] <root> | <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] init [--fast] <root> | <file|dir|worktree|tmp|cache|link|restore|purge|dup|check|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -379,6 +379,20 @@ case "$cmd" in file|dir|worktree|cache|tmp|link|dup)
   if compgen -G "$BK/inventory-*.json" >/dev/null; then inventory advise "$@" || echo 'safe-delete: inventory advisory unavailable; manual refresh: safe-delete init <root>' >&2; fi
 esac
 case "$cmd" in
+  check)
+    [[ $# -ge 1 ]] || refuse 'usage: safe-delete check <path>…'
+    rc=0
+    for arg in "$@"; do
+      # self='' : read-only query — the self-deletion guard (:143) does not apply, roots/segments still do
+      if out=$( self='' check_resolved "$arg" 2>&1 >/dev/null ); then
+        printf 'ok: %s\n' "$arg"
+      else
+        out=${out#safe-delete: }; out=${out% — route: safe-delete --help}; out=${out%$'\n'}
+        printf 'refused: %s — %s\n' "$arg" "$out" >&2
+        rc=2
+      fi
+    done
+    exit $rc ;;
   init)
     inventory_mode=full
     if [[ ${1:-} == --fast ]]; then inventory_mode=fast; shift; fi
