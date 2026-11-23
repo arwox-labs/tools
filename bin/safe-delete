@@ -383,8 +383,7 @@ case "$cmd" in
     [[ $# -ge 1 ]] || refuse 'usage: safe-delete check <path>…'
     rc=0
     for arg in "$@"; do
-      # self='' : read-only query — the self-deletion guard (:143) does not apply, roots/segments still do
-      if out=$( self='' check_resolved "$arg" 2>&1 >/dev/null ); then
+      if out=$( check_resolved "$arg" 2>&1 >/dev/null ); then
         printf 'ok: %s\n' "$arg"
       else
         out=${out#safe-delete: }; out=${out% — route: safe-delete --help}; out=${out%$'\n'}

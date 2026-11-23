@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# safe-delete check <path>… — red-phase acceptance test (T1..T6).
-# Style: AAA, one line per case: T<n> PASS|FAIL: <detail>, final "итог: PASS n/6".
+# safe-delete check <path>… — acceptance test (T1..T7).
+# Style: AAA, one line per case: T<n> PASS|FAIL: <detail>, final "итог: PASS n/7".
+# Contract: check must predict delete. The self-guard (:143) is therefore active
+# for check too, so T1 uses a normal file (bin/lead-hint) and T7 proves parity.
 # Runs only against this worktree; all mutable state (BK) is redirected to a temp dir,
 # so the real /root/workspaces/projects/.agent-work/backup is never written.
 set -uo pipefail
@@ -21,8 +23,10 @@ mkdir -p "$d/out"
 cd "$repo" || exit 1
 
 # --- T1: positive, path inside a allowed root -> 0 + "ok:" -----------------
-# ARRANGE
-t1in="$repo/bin/safe-delete"
+# ARRANGE: a normal file of this worktree, NOT the script itself — under the
+# "check predicts delete" contract the self-guard applies to check as well, so
+# `check bin/safe-delete` legitimately refuses (proved by T7 parity).
+t1in="$repo/bin/lead-hint"
 # ACT
 t1out=$("$B" check "$t1in" 2>"$d/out/t1.err"); t1rc=$?
 t1err=$(cat "$d/out/t1.err")
@@ -109,6 +113,33 @@ else
 fi
 rm -f -- "$t6scratch"
 
+# --- T7: parity check <-> delete on the same path (both refuse) ------------
+# ARRANGE: a plain, ignored file whose name matches the "*token*" rule; its
+# extension (.txt) is not in the secret-gate list, so both verbs must refuse it.
+# The probe is disposable: nothing here may ever be deleted for real.
+t7probe="$repo/.agent-work/probe-token.txt"
+mkdir -p -- "${t7probe%/*}"
+printf 'probe for T7\n' > "$t7probe"
+# ACT (a) check, (b) delete with an isolated BK
+t7cout=$(SAFE_DELETE_ROOTS="$repo" "$B" check "$t7probe" 2>&1); t7crc=$?
+t7dout=$(SAFE_DELETE_ROOTS="$repo" SAFE_DELETE_BK="$d/bk" "$B" file "$t7probe" 2>&1); t7drc=$?
+test -e "$t7probe"; t7exists=$?
+# ASSERT: same verdict on both sides — rc=2 (refuse(), not fail()=1) and the
+# same reason once each side's own prefix/suffix is stripped. `refused:` is a
+# check-only prefix; the delete path prints the same refuse() text behind
+# "safe-delete: " and appends the route hint, so parity is asserted on the
+# reason text, never on a prefix delete does not emit.
+t7creason=${t7cout#refused: }; t7creason=${t7creason#* — }
+t7dreason=${t7dout#safe-delete: }; t7dreason=${t7dreason% — route: safe-delete --help}
+if [[ $t7crc == 2 && $t7cout == 'refused: '* && $t7drc == 2 && $t7dout == 'safe-delete: '* \
+      && $t7exists == 0 && -n $t7creason && $t7creason == "$t7dreason" ]]; then
+  pass 7 "check rc=2 delete rc=2 verdict=refused+refused reason=$(printf %q "$t7creason") file_gone=no"
+else
+  bad 7 "check rc=$t7crc delete rc=$t7drc file_exists=$([[ $t7exists == 0 ]] && echo yes || echo no); parity_rc=$([[ $t7crc == "$t7drc" ]] && echo yes || echo no) reason_check=$(printf %q "$t7creason") reason_delete=$(printf %q "$t7dreason") out_check=$(printf %q "$t7cout") out_delete=$(printf %q "$t7dout")"
+fi
+rm -f -- "$t7probe"
+rmdir --ignore-fail-on-non-empty -- "${t7probe%/*}" 2>/dev/null
+
 # --- SUMMARY --------------------------------------------------------------
-echo "итог: PASS $ok/6"
+echo "итог: PASS $ok/7"
 [[ $fail == 0 ]]
