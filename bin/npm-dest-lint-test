@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# npm-dest-lint-test: fixture proof of the npm-dest-lint contract
+set -u
+PATH="$(cd -- "$(dirname -- "$0")" && pwd):$PATH"
+tmp=$(mktemp -d /tmp/npm-dest-lint-test.XXXXXX)
+trap 'rm -rf "$tmp"' EXIT
+pass=0
+fail=0
+ok() { pass=$((pass + 1)); printf 'ok %d %s\n' "$pass" "$1"; }
+no() { fail=$((fail + 1)); printf 'not ok %d: %s\n' "$((pass + fail))" "$1" >&2; }
+check() { # label command
+  if eval "$2"; then ok "$1"; else no "$1"; fi
+}
+has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
+hasnt() { case "$2" in *"$1"*) return 1 ;; esac; return 0; }
+
+fixture() { # db
+  sqlite3 "$1" "create table proxy_host (id integer primary key, domain_names json not null, forward_host varchar(255) not null, forward_port integer not null default 80, advanced_config text not null default '', enabled integer not null default 1, is_deleted integer not null default 0);"
+}
+
+db="$tmp/db.sqlite"
+fixture "$db"
+sqlite3 "$db" <<'SQL'
+insert into proxy_host (id, domain_names, forward_host, forward_port, advanced_config, enabled, is_deleted) values
+ (1, '["a.example"]',      'minio',                  9000, '', 1, 0),
+ (2, '["b.example"]',      'host.docker.internal',   9000, '', 1, 0),
+ (3, '["c.example"]',      'pdf-generator-upstream',  80, '', 1, 0),
+ (4, '["d.example"]',      '172.17.0.1',            3333, '', 1, 0),
+ (5, '["e.example"]',      '::1',                   8080, '', 1, 0),
+ (8, '["h.example"]',      '172.17.0.1',            9000, '', 0, 1);
+SQL
+printf '%s\n' 'proxy_set_header Host $host;' 'proxy_pass http://172.20.0.1:20097/;' > "$tmp/adv6"
+printf '%s\n' 'set $server "minio";' 'proxy_pass http://minio:9000;' '# proxy_pass http://172.30.0.1:8080;' > "$tmp/adv7"
+printf '%s\n' 'proxy_pass http://host.docker.internal:3333;' > "$tmp/adv10"
+sqlite3 "$db" "insert into proxy_host (id, domain_names, forward_host, forward_port, advanced_config) values (6, '[\"f.example\"]', 'minio', 9000, readfile('$tmp/adv6'));"
+sqlite3 "$db" "insert into proxy_host (id, domain_names, forward_host, forward_port, advanced_config) values (7, '[\"g.example\"]', 'minio', 9000, readfile('$tmp/adv7'));"
+sqlite3 "$db" "insert into proxy_host (id, domain_names, forward_host, forward_port, advanced_config) values (10, '[\"j.example\"]', 'minio', 9000, readfile('$tmp/adv10'));"
+
+out=$(NPM_DB="$db" npm-dest-lint 2>&1); rc=$?
+check "dirty fixture exit 1" "[ $rc = 1 ]"
+check "forward_host IPv4 reported" "has 'id=4 domain=d.example field=forward_host value=172.17.0.1' \"\$out\""
+check "forward_host IPv6 reported" "has 'id=5 domain=e.example field=forward_host value=::1' \"\$out\""
+check "advanced_config proxy_pass reported with line" "has 'id=6 domain=f.example field=advanced_config:2 value=172.20.0.1' \"\$out\""
+check "only the four violations counted" "has 'RESULT: violations=4' \"\$out\""
+check "container name and *-upstream clean" "hasnt 'id=1 ' \"\$out\" && hasnt 'id=3 ' \"\$out\""
+check "set \$server host and comment ignored" "hasnt 'id=7 ' \"\$out\""
+check "is_deleted row ignored" "hasnt 'id=8 ' \"\$out\""
+check "forward_host host.docker.internal reported as unresolvable" "has 'id=2 domain=b.example field=forward_host value=host.docker.internal reason=unresolvable-in-npm' \"\$out\""
+check "advanced_config host.docker.internal not flagged" "hasnt 'id=10 ' \"\$out\""
+
+q=$(NPM_DB="$db" npm-dest-lint --quiet 2>&1); rc=$?
+check "--quiet prints only RESULT" "[ $rc = 1 ] && [ \"\$(printf '%s\n' \"\$q\" | wc -l)\" = 1 ] && has 'RESULT: violations=4' \"\$q\""
+
+clean="$tmp/clean.sqlite"
+fixture "$clean"
+sqlite3 "$clean" <<'SQL'
+insert into proxy_host (id, domain_names, forward_host, forward_port, advanced_config, enabled, is_deleted) values
+ (1, '["a.example"]',  'minio',                      9000, '', 1, 0),
+ (2, '["b.example"]',  'b.example',                  9000, '', 1, 0),
+ (3, '["c.example"]',  'pdf-generator-upstream',      80, '', 1, 0),
+ (7, '["g.example"]',  'minio',                      9000, '', 1, 0),
+ (9, '["i.example"]',  '172.17.0.1',                 9000, '', 0, 1);
+SQL
+out=$(NPM_DB="$clean" npm-dest-lint 2>&1); rc=$?
+check "clean fixture exit 0" "[ $rc = 0 ] && has 'RESULT: violations=0' \"\$out\""
+
+out=$(NPM_DB="$tmp/missing.sqlite" npm-dest-lint 2>&1); rc=$?
+check "missing database exit 2" "[ $rc = 2 ]"
+mkdir -p "$tmp/nosqlite"
+ln -s "$(command -v bash)" "$tmp/nosqlite/bash"
+out=$(cd "$tmp" && NPM_DB="$db" PATH="$tmp/nosqlite" "$(command -v npm-dest-lint)" 2>&1); rc=$?
+check "missing sqlite3 exit 2" "[ $rc = 2 ]"
+
+total=$((pass + fail))
+if [ "$fail" = 0 ]; then printf 'npm-dest-lint-test: PASS %d/%d\n' "$pass" "$total"; exit 0; fi
+printf 'npm-dest-lint-test: FAIL %d/%d\n' "$pass" "$total"
+exit 1
