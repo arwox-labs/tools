@@ -190,7 +190,9 @@ if [ "$path" = "$CME_PROJECTS_ROOT" ] && [ "$untrack" -eq 0 ]; then
   exit 0
 fi
 
-if [ "$(dirname "$path")" != "$CME_PROJECTS_ROOT" ] && [ "$(dirname "$path")" != "$CME_CLIENTS_ROOT" ] && [ "$path" != "$CME_TOOLS_ROOT" ]; then
+parent_dir="$(dirname "$path")"
+grand_dir="$(dirname "$parent_dir")"
+if [ "$parent_dir" != "$CME_PROJECTS_ROOT" ] && [ "$parent_dir" != "$CME_CLIENTS_ROOT" ] && [ "$grand_dir" != "$CME_CLIENTS_ROOT" ] && [ "$path" != "$CME_TOOLS_ROOT" ]; then
   echo "skip: $path"
   exit 2
 fi
