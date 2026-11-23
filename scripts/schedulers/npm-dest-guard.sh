@@ -11,7 +11,16 @@ log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%S')" "$*"; }
 
 mkdir -p "$(dirname "$STATE")" 2>/dev/null || { log "state dir create failed: $STATE"; exit 0; }
 
-out=$("$LINT" 2>&1); rc=$?
+err="$STATE.lint.err"
+: > "$err"
+out=$("$LINT" 2>"$err"); rc=$?
+if [ -s "$err" ]; then
+  while IFS= read -r line; do log "lint stderr: $line"; done < "$err"
+fi
+if [ "$rc" != 0 ] && [ "$rc" != 1 ]; then
+  log "lint_error rc=$rc"
+  exit 0
+fi
 current=$(printf '%s\n' "$out" | grep -v '^RESULT: ' | sed '/^[[:space:]]*$/d' | LC_ALL=C sort)
 count=$(printf '%s\n' "$current" | sed '/^[[:space:]]*$/d' | wc -l)
 
