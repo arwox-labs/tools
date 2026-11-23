@@ -247,6 +247,23 @@ module.exports = {
       out_file: '/root/.pm2/logs/npm-dest-guard-out.log'
     },
     {
+      // owner 23.11: dash.b244.ru revived; better-sqlite3 rebuilt for Node 24 (ABI 137)
+      name: 'service-dashboard',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/system/services/service-dashboard/server/index.js',
+      cwd: '/root/workspaces/system/services/service-dashboard',
+      interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      error_file: '/root/.pm2/logs/service-dashboard-error.log',
+      out_file: '/root/.pm2/logs/service-dashboard-out.log'
+    },
+    {
       name: 'forms-reserve-probe',
       time: true,
       merge_logs: true,
@@ -675,7 +692,7 @@ module.exports = {
       merge_logs: true,
       script: '/usr/bin/bash',
       interpreter: 'none',
-      args: ['-c', 'PATH=/root/.nvm/versions/node/v24.22.1/bin:$PATH exec npx vite --host 0.0.0.0 --port 3333'],
+      args: ['-c', 'PATH=/root/.nvm/versions/node/v24.22.1/bin:$PATH exec npx vite preview --host 0.0.0.0 --port 20333'],
       cwd: '/root/workspaces/projects/arwox-b24-apps/margin-calc',
       exec_mode: 'fork_mode',
       instances: 1,
