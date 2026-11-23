@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# npm-dest-lint: forbids bare IP destinations in Nginx Proxy Manager proxy_host rows
+# (forward_host and the proxy_pass/grpc_pass/set $server hosts of advanced_config).
+# Read-only: opens the sqlite database with -readonly.
+set -uo pipefail
+
+NPM_DB="${NPM_DB:-/root/workspaces/system/services/proxy-manager/data/database.sqlite}"
+quiet=0
+violations=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --quiet) quiet=1 ;;
+    *) printf 'npm-dest-lint: unknown argument: %s\nusage: npm-dest-lint [--quiet]\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+command -v sqlite3 >/dev/null 2>&1 || { printf 'npm-dest-lint: sqlite3 not found\n' >&2; exit 2; }
+[ -r "$NPM_DB" ] || { printf 'npm-dest-lint: database not readable: %s\n' "$NPM_DB" >&2; exit 2; }
+
+ip_literal() { # host → true for a bare IPv4 or IPv6 literal, brackets allowed
+  local h="${1#[}"
+  h="${h%]}"
+  case "$h" in ''|*'$'*) return 1 ;; esac
+  [[ "$h" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && return 0
+  [[ "$h" == *:* && ! "$h" =~ [^0-9A-Fa-f:.] ]]
+}
+
+host_of() { # directive value → host part without scheme, path, query or port
+  local v="$1"
+  v="${v%%;*}"
+  v="${v%\"}"
+  v="${v#\"}"
+  case "$v" in *://*) v="${v#*://}" ;; esac
+  v="${v%%/*}"
+  v="${v%%\?*}"
+  if [[ "$v" =~ ^(.*):[0-9]+$ ]]; then v="${BASH_REMATCH[1]}"; fi
+  printf '%s' "$v"
+}
+
+emit() { # id domain field value [reason]
+  violations=$((violations + 1))
+  [ "$quiet" = 1 ] && return 0
+  printf 'id=%s domain=%s field=%s value=%s' "$1" "$2" "$3" "$4"
+  [ -n "${5:-}" ] && printf ' reason=%s' "$5"
+  printf '\n'
+}
+
+scan_advanced() { # id domain text
+  local id="$1" domain="$2" text="$3" line t host n=0
+  local -a w
+  while IFS= read -r line; do
+    n=$((n + 1))
+    t="${line#"${line%%[![:space:]]*}"}"
+    case "$t" in ''|'#'*) continue ;; esac
+    case "$t" in *' #'*) t="${t%% #*}" ;; esac
+    read -r -a w <<<"$t"
+    case "${w[0]:-}" in
+      proxy_pass|grpc_pass) host=$(host_of "${w[1]:-}") ;;
+      set) [ "${w[1]:-}" = '$server' ] || continue; host=$(host_of "${w[2]:-}") ;;
+      *) continue ;;
+    esac
+    [ -n "$host" ] || continue
+    ip_literal "$host" && emit "$id" "$domain" "advanced_config:$n" "$host"
+  done <<<"$text"
+}
+
+sql="select id, json_extract(domain_names, '\$[0]') as domain, forward_host,
+            coalesce(advanced_config, '') as advanced_config
+       from proxy_host where is_deleted = 0 order by id;"
+rows=$(sqlite3 -readonly -separator $'\x1f' -newline $'\x1e' "$NPM_DB" "$sql") || {
+  printf 'npm-dest-lint: query failed: %s\n' "$NPM_DB" >&2; exit 2; }
+
+while IFS= read -r -d $'\x1e' rec; do
+  case "$rec" in *$'\x1f'*) ;; *) continue ;; esac
+  id=${rec%%$'\x1f'*}
+  rest=${rec#*$'\x1f'}
+  domain=${rest%%$'\x1f'*}
+  rest=${rest#*$'\x1f'}
+  fhost=${rest%%$'\x1f'*}
+  adv=${rest#*$'\x1f'}
+  if ip_literal "$fhost" || [[ "$fhost" == *:* ]]; then
+    emit "$id" "$domain" forward_host "$fhost"
+  elif [[ "$fhost" == *.docker.internal ]]; then # nginx in NPM resolves $server itself: docker.internal names are host-only
+    emit "$id" "$domain" forward_host "$fhost" unresolvable-in-npm
+  fi
+  [ -n "$adv" ] && scan_advanced "$id" "$domain" "$adv"
+done <<<"$rows"
+
+printf 'RESULT: violations=%s\n' "$violations"
+[ "$violations" -gt 0 ] && exit 1
+exit 0
