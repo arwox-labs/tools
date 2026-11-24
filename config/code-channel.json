@@ -13,10 +13,10 @@
     {
       "id": "go",
       "enabled": true,
-      "model": "teamorouter/deepseek-flash",
+      "model": "alibaba-token-plan/deepseek-v4.1-flash-1017#low",
       "resume_model": "teamorouter/deepseek-flash",
-      "audit_model": "teamorouter/deepseek-v4-pro",
-      "fallback_model": "",
+      "audit_model": "alibaba-token-plan/deepseek-v4-pro-0813#high",
+      "fallback_model": "alibaba-token-plan/deepseek-v4-flash-0731",
       "allowed_models": [
         "bitrixgpt/bitrix/bitrixgpt-5.6-agent",
         "bitrixgpt/bitrix/bitrixgpt-6.0-agent",
