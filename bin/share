@@ -12,9 +12,11 @@ name="$(date +%Y%m%d-%H%M%S)-$(basename "$file")"
 public="https://io.b244.ru/files/$name"
 command -v docker >/dev/null 2>&1 || { echo 'share: docker unavailable' >&2; exit 4; }
 case $file in
-  *.html) ct='text/html; charset=utf-8' ;; *.md|*.txt|*.log|*.csv) ct='text/plain; charset=utf-8' ;;
+  *.html) ct='text/html' ;; *.md|*.txt|*.log|*.csv) ct='text/plain' ;;
   *.json) ct=application/json ;; *) ct=$(file --mime-type -b "$file") ;;
 esac
+# mc pipe splits --attr on ';': the attribute value must carry no parameters.
+ct=${ct%%;*}
 # ponytail: upload streams inside the minio container over localhost — no docker IP, no host mc
 # alias, credentials only from the container env (MINIO_ROOT_USER / MINIO_ROOT_PASSWORD).
 # mc pipe splits --attr on ';', so "; charset" is written without the space.
@@ -23,6 +25,12 @@ timeout "${SHARE_TIMEOUT:-120}" docker exec -i -e SHARE_TARGET="files/$name" \
   'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 \
     && exec mc pipe --quiet --attr "$SHARE_ATTR" "local/$SHARE_TARGET"' <"$file" >/dev/null \
   || { echo 'share: minio upload failed' >&2; exit 4; }
+# mc pipe exits 0 even when --attr is malformed and nothing is written; prove the
+# object exists before handing out a link, otherwise the owner clicks into an empty page.
+timeout 30 docker exec -e SHARE_TARGET="files/$name" minio sh -c \
+  'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 \
+    && exec mc stat --json "local/$SHARE_TARGET"' </dev/null >/dev/null 2>&1 \
+  || { echo 'share: объект не создан, ссылка не выдана' >&2; exit 4; }
 hdr=$(mktemp); payload=$(mktemp); chmod 600 "$hdr" "$payload"; trap 'rm -f "$hdr" "$payload"' EXIT
 keyfile=${SHARE_KUTT_KEY_FILE:-/root/workspaces/system/services/short-links/secret}
 if [[ ! -s $keyfile ]]; then
