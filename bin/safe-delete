@@ -16,14 +16,15 @@ declare -A nolink=() gblob=() grepo=() gmode=()
 allow_client_wt=
 allow_client_tracked=
 client_pins=()
-tmps=()
-trap 'rm -f -- "${tmps[@]}"' EXIT INT TERM HUP
+tmpd=$(mktemp -d "${TMPDIR:-/tmp}/safe-delete.XXXXXX") || exit 1
+trap 'rm -rf -- "$tmpd"' EXIT
+trap 'rm -rf -- "$tmpd"; exit 143' INT TERM HUP
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 log_batch(){ local r; { flock -x 9 || return 1; local n; : >>"$led" || return 1; if [[ -n ${deps_note:-} ]]; then for r in "$@"; do printf '%s\t%s\n' "$r" "$deps_note" >>"$led" || return 1; done; else printf '%s\n' "$@" >>"$led" || return 1; fi; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; log_n=$((n-${#@}+1)); } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
 refuse(){ local m=$*; [[ $m == *'— route: '* ]] || m+=" — route: safe-delete --help"; echo "safe-delete: $m" >&2; exit 2; }
-mkt(){ tf=$(mktemp "${TMPDIR:-/tmp}/safe-delete.XXXXXX") || return 1; tmps+=("$tf"); }
+mkt(){ tf=$(mktemp "$tmpd/XXXXXXXX") || return 1; }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
 proc_state(){ local s; s=$(<"$1") || return 1; s=${s##*) }; s=${s%% *}; printf %s "$s"; }
 self_contained(){
@@ -699,11 +700,10 @@ $f"; done
     else
       avail=$(df --output=avail -B1 /tmp | tail -1)
       (( avail >= 2*$(stat -c %s -- "$copy") )) || refuse "мало места в /tmp для проверки: $copy"
-      tmpd=$(mktemp -d /tmp/safe-delete-dup.XXXXXX) || exit 1
-      trap 'rm -rf "$tmpd"; rm -f -- "${tmps[@]}"' EXIT
-      tar -xf "$copy" -C "$tmpd" --no-same-owner >/dev/null 2>&1
+      dupd=$(mktemp -d "$tmpd/dup.XXXXXX") || exit 1
+      tar -xf "$copy" -C "$dupd" --no-same-owner >/dev/null 2>&1
       gds=()
-      while IFS= read -r o; do [[ -f ${o%/objects}/HEAD ]] && gds+=("${o%/objects}"); done < <(find "$tmpd" -maxdepth 4 -type d -name objects)
+      while IFS= read -r o; do [[ -f ${o%/objects}/HEAD ]] && gds+=("${o%/objects}"); done < <(find "$dupd" -maxdepth 4 -type d -name objects)
       (( ${#gds[@]} == 1 )) || refuse "в архиве не один git-каталог: $copy"
       gd=${gds[0]}
       ids=$({ find "$gd" -type f \( -name packed-refs -o -path "$gd/refs/*" -o -path "$gd/logs/*" -o -name '*HEAD' \) -exec grep -hoE '\b[0-9a-f]{40}\b' {} + 2>/dev/null | grep -vE '^0{40}$'; git --git-dir="$gd" cat-file --batch-all-objects --batch-check='%(objectname)' 2>/dev/null; } | sort -u)
