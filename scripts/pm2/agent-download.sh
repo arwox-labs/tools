@@ -14,14 +14,21 @@ LINK_RESOLVER="${AGENT_LINK_RESOLVER:-agent-link-resolve}"
 LINK_INTAKE="${AGENT_LINK_INTAKE:-agent-link-intake}"
 OUTPUT_DIR=""
 OUTPUT_PATH=""
+CHECK_ONLY=0
 
 usage() {
     echo "Usage: $(basename "$0") [--output-dir DIR] [--output PATH] <URL_or_GDrive_ID>" >&2
+    echo "       $(basename "$0") --check <URL>" >&2
     exit "${1:-1}"
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --check)
+            [[ $# -lt 2 ]] && usage
+            CHECK_ONLY=1
+            shift
+            ;;
         --output-dir)
             [[ $# -lt 2 ]] && usage
             OUTPUT_DIR="$2"
@@ -64,6 +71,15 @@ is_gdrive() {
 is_raw_gdrive_id() {
     [[ "$1" =~ ^[A-Za-z0-9_-]{25,80}$ ]]
 }
+
+# HEAD only: prints the HTTP status code, no download. Uses the internal route
+# (AGENT_DOWNLOAD_INTERNAL=1) because /root/bin/curl intercepts b244/gdrive URLs.
+if [[ "$CHECK_ONLY" == "1" ]]; then
+    code=$(AGENT_DOWNLOAD_INTERNAL=1 /usr/bin/curl -sI -o /dev/null -w '%{http_code}' --max-time 20 "$INPUT" 2>/dev/null || true)
+    [[ "$code" =~ ^[1-5][0-9][0-9]$ ]] || { echo "agent-download: --check получил не код ответа: '$code'" >&2; exit 3; }
+    printf '%s\n' "$code"
+    exit 0
+fi
 
 resolve_url() {
     local url="$1"
