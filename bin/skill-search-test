@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Black-box self-test for bin/skill-search (spec:068).
+# Prints one line per check: PASS/SKIP/FAIL, then PASS N/N; rc 0 iff all PASS.
+set -u
+
+bin="$(cd -- "$(dirname -- "$0")" && pwd)"
+PATH="$bin:$PATH"
+
+pass=0; fail=0; skip=0
+ok()   { printf 'PASS %s\n' "$1"; pass=$((pass+1)); }
+skn()  { printf 'SKIP %s: %s\n' "$1" "$2"; skip=$((skip+1)); }
+bad()  { printf 'FAIL %s: %s\n' "$1" "$2"; fail=$((fail+1)); }
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Network availability (skills.sh realm): used to decide SKIP for tests that
+# need remote skills.sh results. Local catalog sources work regardless.
+code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' https://skills.sh 2>/dev/null || true)
+if [[ $code =~ ^[23][0-9][0-9]$ ]]; then
+    net=1
+else
+    net=0
+fi
+
+# T-01: 10 words, each -> rc 0, >=1 result line whose name field has the word
+#       (case-insensitive substring; business-analyst -> business|analyst) OR,
+#       for catalog sources, whose marketplace.json description has the word.
+official=/root/.claude/plugins/marketplaces/claude-plugins-official/.claude-plugin/marketplace.json
+community=/root/.claude/plugins/marketplaces/claude-community/.claude-plugin/marketplace.json
+
+name_has_word() {
+    local name=$1 w=$2
+    if [[ $w == business-analyst ]]; then
+        grep -qiE 'business|analyst' <<<"$name"
+    else
+        grep -qiF -- "$w" <<<"$name"
+    fi
+}
+
+desc_has_word() {
+    local name=$1 src=$2 w=$3 wre=$3 mp
+    wre=$w
+    [[ $w == business-analyst ]] && wre='business|analyst'
+    case $src in
+        anthropic-official) mp=$official ;;
+        anthropic-community) mp=$community ;;
+        *) return 1 ;;
+    esac
+    local desc
+    desc=$(jq -r --arg n "$name" '.plugins[]|select(.name==$n)|.description' "$mp" 2>/dev/null)
+    [[ -n $desc ]] && grep -qiE "$wre" <<<"$desc"
+}
+
+hit_lines() {
+    local file=$1 w=$2 hits=0 name src
+    while IFS='|' read -r name src _; do
+        name=${name// /}; src=${src// /}
+        if name_has_word "$name" "$w" || desc_has_word "$name" "$src" "$w"; then
+            hits=$((hits+1))
+        fi
+    done <"$file"
+    echo "$hits"
+}
+
+ns_ok=1
+for w in testing requirements erp bitrix telegram pdf security migration frontend business-analyst; do
+    if [[ $net != 1 ]]; then
+        skn T-01 "сеть недоступна (rc=$code)"
+        ns_ok=0
+        break
+    fi
+    skill-search "$w" >"$tmp/t1.out" 2>"$tmp/t1.err"; rc=$?
+    if [[ $rc != 0 ]]; then
+        bad T-01 "$w: rc=$rc"; ns_ok=0; break
+    fi
+    hit=$(hit_lines "$tmp/t1.out" "$w")
+    if [[ $hit -lt 1 ]]; then
+        bad T-01 "$w: нет результата с именем/описанием"
+        ns_ok=0; break
+    fi
+    if grep -qE 'WARN|ERROR' "$tmp/t1.err"; then
+        bad T-01 "$w: stderr содержит WARN/ERROR"
+        ns_ok=0; break
+    fi
+done
+[[ $ns_ok == 1 ]] && ok T-01
+
+# T-02: disable source 3 -> rc 0, exactly one 'источник 3 недоступен' in stderr.
+SKILL_SEARCH_DISABLE=3 skill-search testing >"$tmp/t2.out" 2>"$tmp/t2.err"; rc=$?
+cnt=$(grep -c 'источник 3 недоступен' "$tmp/t2.err")
+if [[ $rc != 0 ]] || [[ $cnt != 1 ]]; then
+    bad T-02 "rc=$rc lines=$cnt"
+else
+    ok T-02
+fi
+
+# T-02b: force source-3 timeout -> rc 0, one line, <=25s.
+if [[ $net != 1 ]]; then
+    skn T-02b "сеть недоступна (rc=$code)"
+else
+    start=$SECONDS
+    SKILL_SEARCH_TIMEOUT_3=0.1 skill-search testing >"$tmp/t2b.out" 2>"$tmp/t2b.err"; rc=$?
+    done=$((SECONDS - start))
+    cnt=$(grep -c 'источник 3 недоступен' "$tmp/t2b.err")
+    if [[ $rc != 0 ]] || [[ $cnt != 1 ]] || [[ $done -gt 25 ]]; then
+        bad T-02b "rc=$rc lines=$cnt t=${done}s"
+    else
+        ok T-02b
+    fi
+fi
+
+# T-03: no match -> rc 0, stdout exactly 'нет навыка: <word>'.
+skill-search zzqx-nonexistent-9f >"$tmp/t3.out" 2>"$tmp/t3.err"; rc=$?
+if [[ $rc != 0 ]]; then
+    bad T-03 "rc=$rc"
+elif [[ "$(cat "$tmp/t3.out")" != 'нет навыка: zzqx-nonexistent-9f' ]]; then
+    bad T-03 "stdout != ожидание"
+else
+    ok T-03
+fi
+
+# T-04: no ANSI escape sequences in stdout.
+if [[ $(skill-search bitrix 2>/dev/null | grep -c $'\e\[') != 0 ]]; then
+    bad T-04 "найден ANSI"
+else
+    ok T-04
+fi
+
+# T-05: forbidden strings in bin/skill-search.
+if [[ $(grep -cE "skills (add|use|update)|pnpm dlx|npx" "$bin/skill-search") != 0 ]]; then
+    bad T-05 "запрещённые строки"
+else
+    ok T-05
+fi
+
+# T-06: pinned skills CLI version.
+ver=$("$bin/../skill-search/node_modules/.bin/skills" --version 2>/dev/null)
+if [[ $ver != 1.5.18 ]]; then
+    bad T-06 "version=$ver"
+else
+    ok T-06
+fi
+
+# T-07: single invocation <=60s.
+if [[ $net != 1 ]]; then
+    skn T-07 "сеть недоступна (rc=$code)"
+else
+    start=$SECONDS
+    skill-search testing >/dev/null 2>&1; rc=$?
+    done=$((SECONDS - start))
+    if [[ $rc != 0 ]] || [[ $done -gt 60 ]]; then
+        bad T-07 "rc=$rc t=${done}s"
+    else
+        ok T-07
+    fi
+fi
+
+total=$((pass + fail + skip))
+if [[ $fail == 0 ]]; then
+    printf 'PASS %d/%d%s\n' "$pass" "$total" "$([[ $skip -gt 0 ]] && echo " ($skip SKIP)" || true)"
+    exit 0
+else
+    printf 'FAIL %d/%d\n' "$fail" "$total"
+    exit 1
+fi

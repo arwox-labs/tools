@@ -44,11 +44,9 @@ check 'T2 overrun nonzero rc' \
 check 'T2 caller alive' kill -0 "$$"
 check 'T2 caller cgroup unchanged' test "$cg_before" = "$cg_after"
 
-# T3: both engine starts are wired through helper-scope.
-check 'T3 code-channel wired' \
-  bash -c '(( $(grep -c "helper-scope" "$1") >= 1 ))' _ "$dir/code-channel"
-check 'T3 sdk-agent wired' \
-  bash -c '(( $(grep -c "helper-scope" "$1") >= 1 ))' _ "$dir/sdk-agent"
+# T3: the active engine start is wired through helper-scope.
+check 'T3 code-agent wired' \
+  bash -c '(( $(grep -c "helper-scope" "$1") >= 1 ))' _ "$dir/code-agent"
 
 # T4: no systemd-run -> unscoped run, one stderr line, rc 0.
 out=$(HELPER_SCOPE_SYSTEMD_RUN=/nonexistent "$hs" /bin/echo ran 2>"$tmp/t4.err"); rc=$?

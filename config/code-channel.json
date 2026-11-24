@@ -4,9 +4,36 @@
   "resume_idle_limit": 3,
   "resume_attempt_limit": 3,
   "run_timeout": 1800,
-  "switch": {"channel": "go", "owner_word": "все последующие запуски должны происходить через Go Worker Go (владелец 26.10)", "date": "2026-10-26"},
+  "switch": {
+    "channel": "go",
+    "owner_word": "все последующие запуски должны происходить через Go Worker Go (владелец 26.10)",
+    "date": "2026-10-26"
+  },
   "ladder": [
-    {"id": "go", "enabled": true, "model": "opencode-go/deepseek-v4.1-flash", "resume_model": "opencode-go/deepseek-v4.1-flash", "audit_model": "opencode-go/deepseek-v4.1-flash", "fallback_model": "opencode-go/deepseek-v4-pro"},
-    {"id": "sdk", "enabled": true, "model": "claude-haiku-5-5", "owner_word": "25.10 владелец: «Мы переключаемся на SDK-агента»"}
+    {
+      "id": "go",
+      "enabled": true,
+      "model": "teamorouter/deepseek-flash",
+      "resume_model": "teamorouter/deepseek-flash",
+      "audit_model": "teamorouter/deepseek-v4-pro",
+      "fallback_model": "",
+      "allowed_models": [
+        "bitrixgpt/bitrix/bitrixgpt-5.6-agent",
+        "bitrixgpt/bitrix/bitrixgpt-6.0-agent",
+        "opencode-go/longcat-2.5-free",
+        "opencode/longcat-2.5-free",
+        "teamorouter/deepseek-flash",
+        "teamorouter/deepseek-flash-free",
+        "teamorouter/deepseek-v4-pro",
+        "teamorouter/glm-5.3-flash",
+        "teamorouter/glm-5.3-flash-free"
+      ]
+    },
+    {
+      "id": "sdk",
+      "enabled": true,
+      "model": "claude-haiku-5-5",
+      "owner_word": "25.10 владелец: «Мы переключаемся на SDK-агента»"
+    }
   ]
 }

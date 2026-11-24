@@ -424,7 +424,7 @@ module.exports = {
       min_uptime: 1000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
-      cron_restart: '30 */3 * * *',
+      cron_restart: '30 3 * * *',
       error_file: '/root/.pm2/logs/server-backup-error.log',
       out_file: '/root/.pm2/logs/server-backup-out.log'
     },
@@ -1156,38 +1156,6 @@ module.exports = {
       exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/yandex-mvp-backend-error.log',
       out_file: '/root/.pm2/logs/yandex-mvp-backend-out.log'
-    },
-    {
-      name: 'yubikey-v1',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/yubikey-v1/server/index.js',
-      cwd: '/root/workspaces/projects/yubikey-v1',
-      interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/yubikey-v1-error.log',
-      out_file: '/root/.pm2/logs/yubikey-v1-out.log'
-    },
-    {
-      name: 'yubikey-v2',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/yubikey-v2/server/index.js',
-      cwd: '/root/workspaces/projects/yubikey-v2',
-      interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/yubikey-v2-error.log',
-      out_file: '/root/.pm2/logs/yubikey-v2-out.log'
     },
     {
       name: 'pm2-reconcile-guard',

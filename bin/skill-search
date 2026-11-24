@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# skill-search <слово>: поиск навыков по локальным каталогам Anthropic + skills.sh.
+# Источники: 1 official, 2 community (jq по marketplace.json), 3 skills.sh CLI.
+# 4 (ags) не реализован (ponytail: сервис мёртв, agentskill-sh/ags#18).
+set -u
+
+[[ $# == 1 ]] || { echo 'usage: skill-search <слово>' >&2; exit 2; }
+q=$1
+
+bin="$(cd -- "$(dirname -- "$0")" && pwd)"
+root="$(cd -- "$bin/.." && pwd)"
+
+official=/root/.claude/plugins/marketplaces/claude-plugins-official/.claude-plugin/marketplace.json
+community=/root/.claude/plugins/marketplaces/claude-community/.claude-plugin/marketplace.json
+skills_bin="$root/skill-search/node_modules/.bin/skills"
+ags_state="$root/scripts/schedulers/state/ags-search-watch.state"
+
+res="$(mktemp)"; worked=0
+trap 'rm -f "$res"' EXIT
+
+# Каталоги Anthropic (источники 1-2).
+run_catalog() {
+    local n=$1 file=$2 pre=$3 out rc
+    out=$(jq -r --arg q "$q" --arg pre "$pre" '
+        def su: if (.source|type)=="object" then (.source.url // "") else "" end;
+        def sh: if (.source|type)=="object" then (.source.sha // "") else "" end;
+        def where: if ((.homepage // "")|length)>0 then .homepage
+                   elif su!="" then su else "-" end;
+        def sha: if sh!="" then ("sha:"+sh) else "sha:-" end;
+        def hn: ((.name // "") | test("\\b"+$q+"\\b";"i"));
+        def hd: ((.description // "") | test("\\b"+$q+"\\b";"i"));
+        ( [ .plugins[] | select(hn) |
+            "\(.name) | \($pre) | \(where) | \(sha) | риск: каталог Anthropic" ]
+          + [ .plugins[] | select((hn|not) and hd) |
+            "\(.name) | \($pre) | \(where) | \(sha) | риск: каталог Anthropic" ]
+        )[0:10][]
+    ' "$file" 2>/dev/null)
+    rc=$?
+    if [[ $rc == 0 ]]; then
+        worked=$((worked+1))
+        [[ -n $out ]] && printf '%s\n' "$out" >>"$res"
+    else
+        echo "источник $n недоступен" >&2
+    fi
+}
+
+# skills.sh (источник 3).
+run_skills() {
+    local out rc n=0 pkg= cnt=0 first owner repo path
+    out=$(set -o pipefail; DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 \
+        timeout "${SKILL_SEARCH_TIMEOUT_3:-20}" "$skills_bin" find "$q" 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g')
+    rc=$?
+    if [[ $rc != 0 ]]; then
+        echo 'источник 3 недоступен' >&2
+        return
+    fi
+    worked=$((worked+1))
+    while IFS= read -r line; do
+        [[ $line == *'Install with'* || $line == *'No skills found'* ]] && continue
+        [[ -z ${line// } ]] && continue
+        if [[ $line == *'https://skills.sh/'* ]]; then
+            [[ -z $pkg ]] && continue
+            path=${line#*skills.sh/}
+            path=${path%% *}
+            owner=${path%%/*}; repo=${path#*/}; repo=${repo%%/*}
+            printf '%s | skills.sh | https://github.com/%s/%s | %s установок | риск: сторонний, SHA закрепить при уровне 1\n' \
+                "$pkg" "$owner" "$repo" "$cnt" >>"$res"
+            n=$((n+1)); pkg=; cnt=0
+            [[ $n -ge 10 ]] && break
+        else
+            IFS=' ' read -r first _ <<<"$line"
+            pkg=$first
+            cnt=0
+            if [[ $line =~ ([0-9][0-9.,]*[KkMm]?)[[:space:]]+install ]]; then
+                cnt=${BASH_REMATCH[1]}
+            fi
+        fi
+    done <<<"$out"
+}
+
+case ${SKILL_SEARCH_DISABLE:-} in
+    1) echo 'источник 1 недоступен' >&2 ;;
+    *) run_catalog 1 "$official" anthropic-official ;;
+esac
+case ${SKILL_SEARCH_DISABLE:-} in
+    2) echo 'источник 2 недоступен' >&2 ;;
+    *) run_catalog 2 "$community" anthropic-community ;;
+esac
+case ${SKILL_SEARCH_DISABLE:-} in
+    3) echo 'источник 3 недоступен' >&2 ;;
+    *) run_skills ;;
+esac
+
+# Источник 4 (ags): только если флаг готов; сам вызов не реализован.
+if grep -q '^done=1$' "$ags_state" 2>/dev/null; then
+    :
+else
+    echo 'источник 4 пропущен: ags поиск не работает (agentskill-sh/ags#18)' >&2
+fi
+
+if [[ -s $res ]]; then
+    cat "$res"
+    exit 0
+fi
+if [[ $worked -gt 0 ]]; then
+    echo "нет навыка: $q"
+    exit 0
+fi
+exit 2

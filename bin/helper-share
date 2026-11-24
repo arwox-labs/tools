@@ -8,8 +8,8 @@ usage: bin/helper-share --session <file.jsonl> | --days N [--help]
 
 Print the helper share of a Claude Code main session (sidechains excluded).
   H = Bash call whose command starts with a helper launch: optional env
-      assignments / command / exec / env / nohup, then code-channel, sdk-agent
-      or a path ending in /bin/code-channel|sdk-agent
+      assignments / command / exec / env / nohup, then code-agent,
+      code-agent or a historical code-channel command/path
   L = Read/Grep/Glob/WebFetch/WebSearch, code-file Edit/Write, or Bash
       starting with grep rg find ls cat head tail sed wc
 Output: helper-share: <pct>% helpers=<H> lead=<L>  (pct rounded down)
@@ -26,7 +26,8 @@ classify() {
     def classify:
       . as $c
       | ($c.input.command // "") as $cmd
-      | if ($c.name == "Bash") and ($cmd | test("^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*(code-channel|sdk-agent|([^[:space:]=]*/)?bin/(code-channel|sdk-agent))([[:space:]]|$)")) then "H"
+      # Historical transcripts retain the helper classification they had at execution.
+      | if ($c.name == "Bash") and ($cmd | test("^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*(code-agent|code-channel|sdk-agent|([^[:space:]=]*/)?bin/(code-agent|code-channel|sdk-agent))([[:space:]]|$)")) then "H"
         elif (["Read","Grep","Glob","WebFetch","WebSearch"] | index($c.name)) != null then "L"
         elif (($c.name == "Edit" or $c.name == "Write")
               and (($c.input.file_path // "") | test("\\.(sh|py|js|ts|mjs|cjs|go|rb|rs|java|php)$"))) then "L"

@@ -222,7 +222,7 @@ used_kb() { df -P / | awk 'NR==2 {print $3}'; }
 declared_paths() { # источник: crontab | ecosystem
   local src=$1
   if [ "$src" = crontab ]; then
-    crontab -l 2>/dev/null | grep -oE '/[^[:space:]]+' \
+    ${DR_CRONTAB_CMD:-crontab -l} 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -oE '/[^[:space:]]+' \
       | grep -E '(scripts?/|\.sh$|\.py$|\.js$)' | sed -E 's/:[0-9]+$//' | grep '^/' | sort -u
   else
     grep -oE "script: *'[^']+'" "$ECOSYSTEM" 2>/dev/null | sed -E "s/script: *'([^']+)'/\1/" | grep '^/' | sort -u
@@ -865,6 +865,132 @@ clean_dir() { # base mtime class
   handle "$cls" < <(find -P "$base" -mindepth 1 -mtime "+$mtime" -type f -print0 2>/dev/null)
 }
 
+# snap-revisions (owner 21.11): disabled-ревизии удаляются штатным snap; снят запрет из spec:054
+# только для disabled — активные ревизии не трогаются. Guard: snapd жив.
+cleanup_snap() {
+  local line name rev notes
+  command -v snap >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet snapd 2>/dev/null || { echo "snap: snapd неактивен, пропуск" >>"$DR_LOG"; return 0; }
+  while read -r name rev notes; do
+    [ -n "$name" ] && [ -n "$rev" ] || continue
+    case " $notes " in *" disabled "*) ;; *) continue;; esac
+    if [ "$MODE" = run ]; then
+      if snap remove "$name" --revision="$rev" >>"$DR_LOG" 2>&1; then
+        journal_row snap deleted "rev:$name:$rev" - replaceable - "disabled revision removed"
+      else
+        CLEANUP_FAILED=1
+        journal_row snap failed "rev:$name:$rev" - replaceable - "snap remove failed"
+      fi
+    else
+      printf 'rev:%s:%s\t0k\t-\tsnap-revision\n' "$name" "$rev"
+    fi
+  done < <(snap list --all 2>/dev/null | awk 'NR>1 && $NF ~ /disabled/ {print $1, $3, $NF}')
+}
+
+# vscode-servers (owner 21.11): мёртвые серверы удаляются; активные определяются по процессам и lru.json.
+cleanup_vscode() {
+  local base=/root/.vscode-server/cli/servers d keep
+  [ -d "$base" ] && [ ! -L "$base" ] || return 0
+  for d in "$base"/Stable-*; do
+    [ -d "$d" ] || continue
+    # активен: процесс с cwd/exe/fd внутри каталога
+    if grep -qF "$d" /proc/[0-9]*/cwd /proc/[0-9]*/exe 2>/dev/null; then continue; fi
+    # активен: упомянут живыми процессами (командные строки)
+    if ps -eo args 2>/dev/null | grep -F "$d" | grep -qv grep; then continue; fi
+    denied "$d" && continue
+    handle vscode < <(find -P "$d" -type f -print0 2>/dev/null)
+    if [ "$MODE" = run ]; then
+      find "$d" -depth -type d -empty -delete 2>/dev/null
+    fi
+  done
+  # lru.json: подрезать до живых серверов
+  if [ "$MODE" = run ] && [ -f "$base/lru.json" ]; then
+    keep=$(ls -1 "$base" 2>/dev/null | grep '^Stable-' | tr '\n' ',' | sed 's/,$//')
+    [ -n "$keep" ] || return 0
+    python3 - "$base/lru.json" "$keep" <<'PY' 2>/dev/null || echo "vscode lru trim skipped" >>"$DR_LOG"
+import json, sys
+p, keep = sys.argv[1], sys.argv[2].split(',')
+data = json.load(open(p))
+trimmed = [x for x in (data if isinstance(data, list) else []) if x in keep]
+if trimmed != data:
+    json.dump(trimmed, open(p, 'w'))
+PY
+  fi
+}
+
+# node-versions (owner 21.11): неактивные версии nvm удаляются; активные — по процессам и alias.
+cleanup_node() {
+  local nvm_root=${DR_NVM_ROOT:-/root/.nvm/versions/node} d active alias keep
+  [ -d "$nvm_root" ] || return 0
+  # цели: alias default и lts
+  keep="$({
+    cat "$nvm_root/../alias/default" 2>/dev/null
+    cat "$nvm_root/../alias/lts" 2>/dev/null
+  } | grep -E '^v?[0-9]' | sed 's/^/v/' | sort -u)"
+  for d in "$nvm_root"/v*; do
+    [ -d "$d" ] || continue
+    active=0
+    # процесс использует эту версию
+    if ps -eo args 2>/dev/null | grep -F "$d" | grep -qv grep; then active=1; fi
+    # версия в keep-списке alias
+    if echo "$keep" | grep -qF "$(basename "$d")"; then active=1; fi
+    [ "$active" = 1 ] && continue
+    denied "$d" && continue
+    handle node < <(find -P "$d" -type f -mtime +7 -print0 2>/dev/null)
+    if [ "$MODE" = run ]; then
+      find "$d" -depth -type d -empty -delete 2>/dev/null
+      rmdir --ignore-fail-on-non-empty -p "$d" 2>/dev/null || true
+    fi
+  done
+}
+
+# sandbox (owner 21.11): тестовые песочницы старше 30 дней; test-assert исключён (TOOLS-REGISTRY).
+cleanup_sandbox() {
+  local base=/root/workspaces/sandbox d
+  [ -d "$base" ] && [ ! -L "$base" ] || return 0
+  local age_min=$(( ${DR_SANDBOX_AGE_DAYS:-30} * 1440 ))
+  for d in "$base"/*/; do
+    d="${d%/}"
+    [ -d "$d" ] || continue
+    [ "$(basename "$d")" = test-assert ] && continue
+    # каталог занят живым процессом (cwd/exe/fd)
+    if grep -qF "$d" /proc/[0-9]*/cwd /proc/[0-9]*/exe 2>/dev/null; then continue; fi
+    denied "$d" && continue
+    handle sandbox < <(find -P "$d" -type f -mmin +"$age_min" -print0 2>/dev/null)
+    if [ "$MODE" = run ]; then
+      find "$d" -depth -type d -empty -delete 2>/dev/null
+    fi
+  done
+}
+
+# migration-dups (owner 21.11): .tmp-копии репо удаляются только при точном совпадении HEAD с живым оригиналом.
+cleanup_migration_dups() {
+  local base=/root/workspaces/projects/.tmp/repo-migration-backups b name live bh lh
+  [ -d "$base" ] || return 0
+  for b in "$base"/*.git; do
+    [ -d "$b" ] || continue
+    name=$(basename "$b" .git)
+    live=""
+    for cand in /root/workspaces/git-dirs/"$name".git /root/workspaces/projects/"$name" \
+                /root/workspaces/projects/clients/"$name" /root/workspaces/system/services/"$name"; do
+      [ -d "$cand" ] && live="$cand"
+    done
+    if [ -z "$live" ]; then
+      echo "migration-dup: $name без живого оригинала — не трогаем" >>"$DR_LOG"
+      continue
+    fi
+    bh=$(git -C "$b" rev-parse HEAD 2>/dev/null); lh=$(git -C "$live" rev-parse HEAD 2>/dev/null)
+    if [ "$bh" != "$lh" ] || [ -z "$bh" ]; then
+      echo "migration-dup: $name HEAD расходится ($bh vs $lh) — не трогаем" >>"$DR_LOG"
+      continue
+    fi
+    handle migration-dup < <(find -P "$b" -type f -print0 2>/dev/null)
+    if [ "$MODE" = run ]; then
+      find "$b" -depth -type d -empty -delete 2>/dev/null
+    fi
+  done
+}
+
 cleanup_cache() { # только доказанные заменимые кэши, каждый прогон
   clean_dir /root/.cache/pip               1 cache
   clean_dir /root/.npm/_cacache            1 cache
@@ -876,8 +1002,12 @@ cleanup_cache() { # только доказанные заменимые кэш�
   clean_dir /root/.cache/mesa_shader_cache 1 cache
   clean_dir /root/.cache/composer          1 cache
   clean_dir /root/.cache/uv                1 cache
+  # codebase-memory-mcp (owner 21.11): регенерируемый индекс MCP; исходники проектов живы отдельно.
+  # _npx (owner 21.11): кэш npx-установок, регенерируется при следующем запуске; порог 30 дней.
+  clean_dir /root/.cache/codebase-memory-mcp 1 cache
+  clean_dir /root/.npm/_npx                30 cache
 
-  # _npx содержит установленный код; browser/session/project data не кандидаты.
+  # browser/session/project data не кандидаты.
   # /tmp (верхний уровень) чистит cleanup_tmp.
   if [ "$MODE" = run ]; then
     if apt-get clean >>"$DR_LOG" 2>&1; then
@@ -891,6 +1021,15 @@ cleanup_cache() { # только доказанные заменимые кэш�
     else
       CLEANUP_FAILED=1
       journal_row logs failed - - replaceable - "journalctl vacuum failed"
+    fi
+    # owner 21.11: агрессивная очистка образов — только по явному флагу (по умолчанию off).
+    if [ "${DOCKER_AGGRESSIVE:-0}" = 1 ]; then
+      if docker image prune -a -f >>"$DR_LOG" 2>&1; then
+        journal_row docker-images cleaned - - replaceable - "docker image prune -a (DOCKER_AGGRESSIVE=1)"
+      else
+        CLEANUP_FAILED=1
+        journal_row docker-images failed - - replaceable - "docker image prune -a failed"
+      fi
     fi
   else
     echo "vendor actions: apt-get clean; journalctl --vacuum-size=200M (dry-run; not executed)"
@@ -1278,6 +1417,11 @@ elif [ "$MODE" != report ]; then
     cleanup_codex_clean
     cleanup_backups
     cleanup_cache
+    cleanup_snap
+    cleanup_vscode
+    cleanup_node
+    cleanup_sandbox
+    cleanup_migration_dups
     projects_gate
     runner_gate
   fi

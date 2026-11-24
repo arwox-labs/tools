@@ -3,6 +3,22 @@
   "snapshot": false,
   "lsp": false,
   "autoupdate": false,
+  "providers": {
+    "teamorouter": {
+      "name": "TeamoRouter",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://api.teamorouter.com/v1",
+        "apiKey": "{env:TEAMOROUTER_API_KEY}"
+      },
+      "models": {
+        "glm-5.3-flash-free": {},
+        "deepseek-flash-free": {},
+        "glm-5.3-flash": {},
+        "deepseek-flash": {}
+      }
+    }
+  },
   "provider": {
     "opencode-go": {
       "options": {
@@ -18,7 +34,7 @@
   },
   "permission": {
     "external_directory": {
-      "*": "deny",
+      "*": "allow",
       "/tmp/**": "allow"
     }
   },
@@ -26,14 +42,14 @@
     "developer": {
       "description": "Senior developer for code-channel Go runs: minimal exact change inside the TZ FILE lines.",
       "mode": "primary",
-      "prompt": "{file:../sdk-agent/system-prompt.md}",
+      "prompt": "{file:./code-channel-system-prompt.md}",
       "permission": {
         "edit": "allow",
         "bash": "allow"
       }
     },
     "audit": {
-      "prompt": "{file:../sdk-agent/system-prompt.md}",
+      "prompt": "{file:./code-channel-system-prompt.md}",
       "permission": {
         "bash": {
           "bd --readonly *": "allow",

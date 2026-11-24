@@ -1,0 +1,15 @@
+{
+  "patterns": [
+    {"regex": "ECONNREFUSED", "level": "warn", "action": "restart", "params": {"delay": 5000}},
+    {"regex": "ENOMEM|heap out of memory", "level": "critical", "action": "restart", "params": {"delay": 10000}},
+    {"regex": "ENOSPC", "level": "critical", "action": "alert", "params": {"check": "df -h / | tail -1 | awk '{print $5}'"}},
+    {"regex": "EACCES|EPERM|permission denied", "level": "error", "action": "log", "params": {}},
+    {"regex": "Cannot find module", "level": "error", "action": "restart", "params": {"delay": 3000}},
+    {"regex": "SyntaxError|ReferenceError|TypeError", "level": "error", "action": "log", "params": {}}
+  ],
+  "default": {
+    "level": "info",
+    "action": "log",
+    "params": {}
+  }
+}

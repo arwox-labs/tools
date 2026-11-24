@@ -46,9 +46,9 @@ if ! flock -n 9; then
   exit 0
 fi
 
-zone_done_today() { # name -> 0, если зона уже записана в DZ_STATE сегодня (UTC)
+zone_done_today() { # name -> 0, если зона уже записана в DZ_STATE сегодня
   local name=$1 today
-  today=$(date -u +%F)
+  today=$(date +%F)
   awk -v z="$name" -v d="$today" '$1==d && $2==z {f=1} END{exit !f}' "$DZ_STATE" 2>/dev/null
 }
 
@@ -102,7 +102,7 @@ run_zone() { # name cmd [zone_mode] — ресурсы, выполнение, с
     rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
-    printf '%s %s\n' "$(date -u +%F)" "$name" >>"$DZ_STATE"
+    printf '%s %s\n' "$(date +%F)" "$name" >>"$DZ_STATE"
   fi
   [ "$rc" -gt "$RC" ] && RC=$rc
 }

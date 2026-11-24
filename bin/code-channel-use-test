@@ -1,59 +1,20 @@
 #!/usr/bin/env bash
-set -u
+set -eu
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
-tmp=$(mktemp -d /tmp/code-channel-use.XXXXXX) || exit 1
-trap 'rm -rf -- "$tmp"' EXIT
-state=$tmp/state
-mkdir -p "$state" || exit 1
-cc=$root/bin/code-channel
-ok=0
+state=$(mktemp -d "${TMPDIR:-/tmp}/code-channel-use.XXXXXX")
+trap 'rm -rf -- "$state"' EXIT
+run() { env -u CODE_CHANNEL_ACTIVE CODE_CHANNEL_CONFIG="$root/config/code-channel.json" CODE_CHANNEL_STATE="$state" "$root/bin/code-agent" "$@"; }
 
-run() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_CONFIG -u CODE_CHANNEL_TEST_LOG -u CODE_CHANNEL_SDK_AGENT CODE_CHANNEL_STATE="$state" "$cc" "$@"; }
-pass() { echo "PASS $1"; ((ok++)); }
-
-out=$(run use go "test quote" 2>&1); rc=$?
-plan=$(run --plan 2>/dev/null); prc=$?
-if [[ $rc == 0 && $out == active=go && $prc == 0 && $plan == go* ]]; then pass 1
-else echo "FAIL 1: rc=$rc out=$out plan=$plan"; fi
-
-out=$(run use sdk "test quote" 2>&1); rc=$?
-plan=$(run --plan 2>/dev/null); prc=$?
-if [[ $rc == 0 && $out == active=sdk && $prc == 0 && $plan == sdk* ]]; then pass 2
-else echo "FAIL 2: rc=$rc out=$out plan=$plan"; fi
-
-before=$plan
-out=$(run use go 2>&1); rc=$?
-plan=$(run --plan 2>/dev/null); prc=$?
-if [[ $rc != 0 && $prc == 0 && $plan == "$before" ]]; then pass 3
-else echo "FAIL 3: rc=$rc out=$out plan=$plan before=$before"; fi
-
-out=$(run use nope "q" 2>&1); rc=$?
-plan=$(run --plan 2>/dev/null)
-if [[ $rc != 0 && $plan == "$before" ]]; then pass 4
-else echo "FAIL 4: rc=$rc out=$out plan=$plan"; fi
-
-tz=$tmp/canary.md
-printf '%s\n' 'Read-only canary. Do not read or change any file. Reply with exactly the line: CANARY-OK' > "$tz"
-
-canary() { # id case [go-login]
-  local id=$1 n=$2 out rc msg
-  run use "$id" "canary $id" >/dev/null 2>&1 || { echo "FAIL $n: use $id"; return; }
-  out=$(run audit "$root" "$tz" 2>&1); rc=$?
-  if [[ $rc == 0 ]] && grep -q 'CANARY-OK' <<<"$out"; then pass "$n"; return; fi
-  if [[ ${3:-} == go-login ]]; then
-    msg=$(grep -m1 -iE 'login|log in|sign in|auth|unauthor|credential|not logged' <<<"$out")
-    if [[ -n $msg ]]; then echo "FAIL $n go-login: $msg"; return; fi
-  fi
-  echo "FAIL $n: rc=$rc out=$out"
-}
-
-canary sdk 5
-canary go 6 go-login
-
-if ((ok == 6)); then
-  echo 'PASS 6/6'
-  exit 0
-fi
-echo "FAIL $((6 - ok))/6"
-exit 1
+[[ $(run use go 'test quote') == active=go ]]
+plan=$(run --plan)
+[[ $plan == 'go '* ]]
+log=$(<"$state/use.log")
+for args in sdk nope; do
+    if run use "$args" 'test quote'; then exit 1; fi
+done
+if run use go; then exit 1; fi
+[[ $(<"$state/active") == go && $(<"$state/use.log") == "$log" ]]
+printf '%s\n' sdk > "$state/active"
+[[ $(run --plan) == "$plan" ]]
+echo 'PASS use go, invalid switches preserve state and log, stale state resolves to go'

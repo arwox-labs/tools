@@ -30,6 +30,12 @@ if [ "$name" = "commit-msg" ]; then
   [ -x "$CG" ] && { "$CG" commit-msg "$1" || exit $?; }
 fi
 
+if [ "$name" = "post-commit" ]; then
+  # AUTO-GITHUB entry point 2 of 2 (owner 08.11). The push logic lives in ONE file, auto-push.sh;
+  # this is a call, not a second copy. Covers repositories whose local hooks path is this dispatcher.
+  [ -x /root/workspaces/projects/.githooks/auto-push.sh ] && /root/workspaces/projects/.githooks/auto-push.sh
+fi
+
 if [ "$name" = "pre-push" ]; then
   # bare GitLab mirrors re-push GitHub history and have no work tree: skip the scan
   is_bare=$(git rev-parse --is-bare-repository 2>/dev/null)

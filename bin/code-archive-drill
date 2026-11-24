@@ -3,6 +3,8 @@
 
 set -o pipefail
 case ${1:-} in -h|--help) echo "usage: code-archive-drill  (checks archive refs and restores one mirror)"; exit 0;; esac
+archive_script="$(readlink -f -- "${BASH_SOURCE[0]}")" || exit 1
+source "${archive_script%/*}/code-archive-refs" || exit 1
 # Default environment
 CA_ENV_FILE="${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}"
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
@@ -54,9 +56,22 @@ build_url() {
   fi
 }
 
-# Select name: explicit CA_DRILL_NAME or random from state/*.pushed_at
+drill_destination_check(){
+  local repo="$1" cache="$CA_REPOS_DIR/$1.git" source_key
+  drill_source=""
+  drill_git_options=()
+  gitlab_reserved "$repo" && return 1
+  [[ "$repo" == .github ]] || return 0
+  drill_git_options=(-c http.followRedirects=false)
+  drill_source=$(git --git-dir="$cache" config --local --get remote.github.url) || return 1
+  source_key=$(archive_source_key "$drill_source") || return 1
+  archive_check_claim "$source_key" "$cache"
+}
+
+# Select name: explicit CA_DRILL_NAME or random from state/*.pushed_at. Every
+# marker counts, hidden ones included (.github.pushed_at starts with a dot).
 if [[ -z "$name" ]]; then
-  mapfile -t pushed_at < <(ls -1 "$CA_STATE_DIR"/*.pushed_at 2>/dev/null | xargs -r -n1 basename -s .pushed_at || true)
+  mapfile -t pushed_at < <(find "$CA_STATE_DIR" -maxdepth 1 -type f -name '*.pushed_at' -printf '%f\n' 2>/dev/null | sed 's/\.pushed_at$//' | sort)
   (( ${#pushed_at[@]} > 0 )) && name="$(printf '%s\n' "${pushed_at[@]}" | shuf -n1)" || true
 fi
 
@@ -69,15 +84,23 @@ if [[ "$CA_GITLAB_BASE" == https://* ]]; then
   export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="${CA_ASKPASS_CMD:-$(dirname "$0")/code-archive}" CA_ASKPASS=1
 fi
 
-# Check refs for every state entry before restoring a random one.
+# Check refs for every state entry before restoring a random one. Markers are
+# enumerated by name, not by a shell glob, so a hidden one is checked too.
 exit_code=0
 mismatches=()
-for state_file in "$CA_STATE_DIR"/*.pushed_at; do
-  [[ -f "$state_file" ]] || continue
+while IFS= read -r state_file; do
   repo_name=$(basename "$state_file" .pushed_at)
   copy_dir="$CA_REPOS_DIR/$repo_name.git"
   exec {lockfd}>"${CA_STATE_DIR}/$repo_name.lock"
   flock "$lockfd"
+
+  if ! drill_destination_check "$repo_name"; then
+    log "drill:mismatch ownership $repo_name layer=gitlab unverified-destination"
+    mismatches+=("$repo_name")
+    exit_code=1
+    exec {lockfd}>&-
+    continue
+  fi
 
   # Check if local copy exists
   if [[ ! -d "$copy_dir" ]]; then
@@ -92,9 +115,10 @@ for state_file in "$CA_STATE_DIR"/*.pushed_at; do
   local_refs=$(( $(git --git-dir="$copy_dir" for-each-ref refs/heads 2>/dev/null | wc -l) + $(git --git-dir="$copy_dir" for-each-ref refs/tags 2>/dev/null | wc -l) ))
 
   # Fetch GitLab refs once. A missing project clears pushed_at; a transient
-  # failure preserves state for the next drill.
-  repo_gitlab_url=$(build_url "$CA_GITLAB_BASE" "$repo_name")
-  ls_out=$(git ls-remote --heads --tags "$repo_gitlab_url" 2>&1); ls_rc=$?
+  # failure preserves state for the next drill. --refs drops peeled tags, so
+  # every remaining line is a real ref with its object id.
+  repo_gitlab_url=$(build_url "$CA_GITLAB_BASE" "$(gitlab_name "$repo_name")")
+  ls_out=$(git "${drill_git_options[@]}" ls-remote --refs --heads --tags "$repo_gitlab_url" 2>&1); ls_rc=$?
   if [[ "$ls_rc" != 0 ]]; then
     if [[ "$ls_out" == *'not found'* || "$ls_out" == *'does not appear to be a git repository'* ]]; then
       log "drill:missing $repo_name gitlab layer=gitlab $(reason "$ls_out")"
@@ -106,19 +130,18 @@ for state_file in "$CA_STATE_DIR"/*.pushed_at; do
     exec {lockfd}>&-
     continue
   fi
-  gitlab_refs=$(printf '%s\n' "$ls_out" | awk '$2 !~ /\^\{\}$/ { print $2 }' | sort)
-  local_names=$(git --git-dir="$copy_dir" for-each-ref --format='%(refname)' refs/heads refs/tags | sort)
-  missing=$(comm -23 <(printf '%s\n' "$local_names") <(printf '%s\n' "$gitlab_refs"))
-  if [[ -n "$missing" ]]; then
-    missing_count=$(printf '%s\n' "$missing" | wc -l | tr -d '[:space:]')
-    log "drill:mismatch incomplete $repo_name layer=gitlab $missing_count missing"
+  gitlab_refs=$(printf '%s\n' "$ls_out" | awk '$2 !~ /\^\{\}$/ { print $1 " " $2 }' | sort)
+  missing=()
+  archive_missing_refs "$copy_dir" "$gitlab_refs" missing
+  if (( ${#missing[@]} )); then
+    log "drill:mismatch incomplete $repo_name layer=gitlab ${#missing[@]} missing"
     rm -f "$state_file"
     mismatches+=("$repo_name")
     exit_code=1
   fi
   state_write "$CA_STATE_DIR/$repo_name.refs" "$local_refs $(printf '%s\n' "$gitlab_refs" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
   exec {lockfd}>&-
-done
+done < <(find "$CA_STATE_DIR" -maxdepth 1 -type f -name '*.pushed_at' 2>/dev/null | sort)
 state_write "$CA_STATE_DIR/drill.mismatch" "$(printf '%s\n' "${mismatches[@]}")"
 
 # Restore one selected project after all state markers have been reconciled.
@@ -126,17 +149,25 @@ if [[ -z "$name" ]]; then
   log "drill:mismatch restore unknown layer=gitlab no-state-entry"
   exit_code=1
 else
-  rm -rf "$drill_dir"
-  gitlab_url=$(build_url "$CA_GITLAB_BASE" "$name")
-  if ! git clone -q --bare "$gitlab_url" "$drill_dir" 2>/dev/null; then
+  if [[ "$name" == .github ]]; then
+    exec {restore_lock}>"${CA_STATE_DIR}/.github.lock" || exit 1
+    flock "$restore_lock" || exit 1
+  fi
+  gitlab_url=$(build_url "$CA_GITLAB_BASE" "$(gitlab_name "$name")")
+  if ! drill_destination_check "$name"; then
+    log "drill:mismatch restore $name layer=gitlab unverified-destination"
+    exit_code=1
+  elif ! (rm -rf "$drill_dir" && git "${drill_git_options[@]}" clone -q --bare "$gitlab_url" "$drill_dir") 2>/dev/null; then
     log "drill:mismatch restore $name layer=gitlab clone-failed"
     exit_code=1
   else
-    github_url=""
-    for owner in $CA_GITHUB_BASES; do
-      candidate="$(build_url "$(printf "$CA_GITHUB_SRC" "$owner")" "$name")"
-      if git ls-remote "$candidate" HEAD >/dev/null 2>&1; then github_url="$candidate"; break; fi
-    done
+    github_url="$drill_source"
+    if [[ -z "$github_url" ]]; then
+      for owner in $CA_GITHUB_BASES; do
+        candidate="$(build_url "$(printf "$CA_GITHUB_SRC" "$owner")" "$name")"
+        if git ls-remote "$candidate" HEAD >/dev/null 2>&1; then github_url="$candidate"; break; fi
+      done
+    fi
     [[ -n "$github_url" ]] || github_url="$(build_url "$CA_GITHUB_BASE" "$name")"
     gh_head=$(git ls-remote "$github_url" HEAD 2>/dev/null | awk '{print $1}' || true)
     if [[ -z "$gh_head" ]] || ! git --git-dir="$drill_dir" cat-file -e "$gh_head" 2>/dev/null; then
@@ -144,6 +175,7 @@ else
       exit_code=1
     fi
   fi
+  if [[ "$name" == .github ]]; then exec {restore_lock}>&-; fi
 fi
 
 if (( exit_code == 0 )); then

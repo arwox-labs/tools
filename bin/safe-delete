@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] init [--fast] <root> | <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -151,6 +151,128 @@ $p
   case $p in "$HOME"/.config/gh|"$HOME"/.config/gh/*|"$HOME"/.config/yandex-cloud|"$HOME"/.config/yandex-cloud/*|"$HOME"/.config/gcloud|"$HOME"/.config/gcloud/*) refuse "запрещённый сегмент: $p";; esac
 }
 client_pinned(){ local p; for p in "${client_pins[@]}"; do [[ -d $p || -n ${gblob[$p]:-} ]] || refuse "запрещённый сегмент: $p"; done; }
+inventory(){
+  python3 - "$BK" "$self" "$HOME" "$@" <<'PY'
+import fnmatch, glob, hashlib, json, os, stat, sys, tempfile, time
+bk, command, home, mode, *args = sys.argv[1:]
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+def blocked(path):
+    parts = path.split('/')
+    name = parts[-1]
+    return (any(p in {'secrets', 'hh-scoring', '.codex', '.git', '.beads', 'clients'} or p.startswith('.repowise') for p in parts)
+            or any(fnmatch.fnmatchcase(name, pattern) for pattern in ('.env*', '*.pem', '*.key', 'auth.json', 'hosts.yml', 'credentials*', '*token*'))
+            or path == command or path == bk or path.startswith(bk + '/')
+            or any(path == p or path.startswith(p + '/') for p in
+                   ('/etc/claude-code', home + '/.ssh', home + '/.config/gh', home + '/.config/yandex-cloud', home + '/.config/gcloud'))
+            or (path.startswith(home + '/.claude/') and fnmatch.fnmatchcase(name, 'settings*.json'))
+            or (path.startswith('/root/workspaces/git-dirs/') and any(p.endswith('.git') for p in parts)))
+def load(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 32 * 1024 * 1024:
+            raise ValueError('invalid snapshot file')
+        data = json.load(stream)
+    if (data.get('version') != 1 or not isinstance(data.get('root'), str)
+            or not os.path.isabs(data['root']) or os.path.normpath(data['root']) != data['root']
+            or not isinstance(data.get('directories'), dict) or '.' not in data['directories']
+            or not isinstance(data.get('excluded'), list) or not isinstance(data.get('scanned_at'), int)):
+        raise ValueError('invalid snapshot structure')
+    for path, metadata in data['directories'].items():
+        if (path != '.' and (not path or os.path.isabs(path) or any(p in ('', '.', '..') for p in path.split('/')))
+                or not isinstance(metadata, list) or len(metadata) != 5 or any(type(n) is not int for n in metadata)):
+            raise ValueError('invalid directory metadata')
+    if any(not isinstance(p, str) or not p or os.path.isabs(p) or any(s in ('', '.', '..') for s in p.split('/')) for p in data['excluded']):
+        raise ValueError('invalid excluded boundary')
+    return data
+# Scope ceiling: encountered-directory guidance; upgrade only for an explicit global-drift requirement.
+if mode == 'advise':
+    for snapshot in glob.glob(os.path.join(bk, 'inventory-*.json')):
+        try:
+            data = load(snapshot)
+        except (OSError, ValueError, TypeError, AttributeError):
+            print('safe-delete: inventory unavailable; manual refresh: safe-delete init <root>', file=sys.stderr)
+            continue
+        root = data['root']
+        unknown = set()
+        for raw in args:
+            path = os.path.abspath(raw)
+            try:
+                if not stat.S_ISDIR(os.lstat(path).st_mode):
+                    path = os.path.dirname(path)
+            except OSError:
+                continue
+            if path == root or path.startswith(root + '/'):
+                rel = os.path.relpath(path, root)
+                if rel not in data['directories']:
+                    unknown.add(path)
+        if unknown:
+            print('safe-delete: inventory unknown directories=%d; manual refresh: safe-delete init %s' % (len(unknown), root), file=sys.stderr)
+    sys.exit(0)
+try:
+    raw, root = args
+    # Open every component without following symlinks, including before '..'.
+    fd = os.open('/' if os.path.isabs(raw) else '.', flags)
+    try:
+        for part in raw.split('/'):
+            if part in ('', '.'):
+                continue
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        initial = os.fstat(fd)
+        if blocked(root):
+            raise ValueError('protected inventory root')
+        snapshot = os.path.join(bk, 'inventory-' + hashlib.sha256(os.fsencode(root)).hexdigest() + '.json')
+        if mode == 'fast':
+            data = load(snapshot)
+            if data['root'] != root or data['directories']['.'][:2] != [initial.st_dev, initial.st_ino]:
+                raise ValueError('incompatible inventory root')
+            print('inventory reused; not a fresh scan: directories=%d excluded=%d root=%s' % (len(data['directories']), len(data['excluded']), root))
+        else:
+            directories, excluded = {}, []
+            def scan(current, rel):
+                before = os.fstat(current)
+                directories[rel] = [before.st_dev, before.st_ino, before.st_mode, before.st_mtime_ns, before.st_ctime_ns]
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        child_rel = entry.name if rel == '.' else rel + '/' + entry.name
+                        if blocked(root + '/' + child_rel) or entry.is_symlink():
+                            excluded.append(child_rel)
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            child = os.open(entry.name, flags, dir_fd=current)
+                            try:
+                                observed = entry.stat(follow_symlinks=False)
+                                opened = os.fstat(child)
+                                if (observed.st_dev, observed.st_ino) != (opened.st_dev, opened.st_ino):
+                                    raise ValueError('directory changed during scan')
+                                scan(child, child_rel)
+                            finally:
+                                os.close(child)
+                after = os.fstat(current)
+                if (before.st_mtime_ns, before.st_ctime_ns) != (after.st_mtime_ns, after.st_ctime_ns):
+                    raise ValueError('directory changed during scan')
+            scan(fd, '.')
+            data = dict(version=1, root=root, directories=directories, excluded=excluded, scanned_at=int(time.time()))
+            temp_fd, temporary = tempfile.mkstemp(prefix='.inventory-', dir=bk)
+            try:
+                with os.fdopen(temp_fd, 'w') as stream:
+                    json.dump(data, stream, ensure_ascii=True)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, snapshot)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            print('inventory complete: directories=%d excluded=%d root=%s' % (len(directories), len(excluded), root))
+    finally:
+        os.close(fd)
+except (OSError, ValueError, TypeError, AttributeError, RecursionError) as error:
+    print('safe-delete: inventory incomplete/unavailable (%s); run full initialization: safe-delete init <root>' % error, file=sys.stderr)
+    sys.exit(2)
+PY
+}
 resolve_all(){
   rs=()
   (($#)) || return 0
@@ -253,7 +375,18 @@ if [[ ( $cmd == dir || $cmd == worktree ) && $# -gt 1 ]]; then
   exit 2
 fi
 
+case "$cmd" in file|dir|worktree|cache|tmp|link|dup)
+  if compgen -G "$BK/inventory-*.json" >/dev/null; then inventory advise "$@" || echo 'safe-delete: inventory advisory unavailable; manual refresh: safe-delete init <root>' >&2; fi
+esac
 case "$cmd" in
+  init)
+    inventory_mode=full
+    if [[ ${1:-} == --fast ]]; then inventory_mode=fast; shift; fi
+    [[ $# -eq 1 ]] || refuse 'usage: safe-delete init [--fast] <root>'
+    check_path "$1"; [[ -d $p ]] || refuse "not a directory: $p"
+    inventory "$inventory_mode" "$1" "$p"
+    exit $?
+    ;;
   repo-autodelete)
     [[ $# -ge 1 ]] || refuse 'usage'; repo=$1
     old=$(gh repo view "$repo" --json deleteBranchOnMerge -q .deleteBranchOnMerge) || exit 1
@@ -343,7 +476,8 @@ case "$cmd" in
     common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || refuse "не worktree: $wt"; [[ $common != .git ]] || refuse "не linked worktree: $wt"
     common=$(realpath -e "$common") || exit 1
     for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(proc_state "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
-    mkt || exit 1; { git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } >"$tf"
+    sha=$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null) || sha=
+    mkt || exit 1; { git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; [[ -z $sha ]] || git -C "$wt" diff -z --name-only --cached HEAD; } >"$tf"
     mapfile -d '' rels <"$tf"; mkt || exit 1; ff=$tf
     for rel in "${rels[@]}"; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu >"$ff"
     mapfile -d '' files <"$ff"
@@ -352,8 +486,8 @@ $f"; done
     resolve_all "${files[@]}"; files=("${rs[@]}")
     git_batch "${files[@]}" || exit 1
     copies=(); for f in "${files[@]}"; do [[ -n ${gblob[$f]:-} ]] && continue; check_resolved "$f"; [[ -f $f ]] || refuse "не обычный файл: $f"; copies+=("$f"); done
-    squash=
-    if git -C "$wt" ls-tree -r --name-only HEAD | grep -qE '(^|/)clients/' && [[ -z $(git -C "$wt" branch -r --contains HEAD 2>/dev/null) ]]; then
+    squash=; ref=-
+    if [[ -n $sha ]] && git -C "$wt" ls-tree -r --name-only HEAD | grep -qE '(^|/)clients/' && [[ -z $(git -C "$wt" branch -r --contains HEAD 2>/dev/null) ]]; then
       [[ -z $(git -C "$wt" status --porcelain 2>/dev/null) ]] || refuse "worktree не на remote с незакоммиченными изменениями: $wt — route: git -C $wt status --short"
       git -C "$wt" fetch -q origin main 2>/dev/null || refuse "не получен origin/main: $wt — route: git -C $wt fetch origin main"
       mb=$(git -C "$wt" merge-base HEAD origin/main 2>/dev/null) || refuse "нет общей истории с origin/main: $wt — route: git -C $wt log --oneline --all"
@@ -362,8 +496,10 @@ $f"; done
       br=$(git -C "$wt" symbolic-ref -q --short HEAD) || refuse "worktree без ветки: $wt — route: git -C $wt status"
       squash=1
     fi
-    sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
-    git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
+    if [[ -n $sha ]]; then
+      ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
+      git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
+    else sha=-; fi
     if [[ -n $squash ]]; then
       est=$(git -C "$wt" bundle create - HEAD --not origin/main 2>/dev/null | wc -c)
       avail=$(df --output=avail -B1 "$BK" | tail -1)
@@ -513,7 +649,7 @@ $f"; done
     repo=$1; br=$2
     git check-ref-format --branch "$br" >/dev/null || refuse "некорректное имя ветки: $br"
     [[ $br == -* || $br == refs/* || $br == heads/* || $br == *'*'* || $br == *'?'* || $br == *'['* ]] && refuse "некорректное имя ветки: $br"
-    [[ $br == main || $br == master || $br == HEAD || $br == codex/* ]] && refuse "отказ по правилу: $br"
+    [[ $br == main || $br == master || $br == HEAD ]] && refuse "отказ по правилу: $br"
     if [[ $GH == true ]]; then
       url=$(git -C "$repo" remote get-url origin) || exit 1
       rr=$(repo_of "$url")
@@ -534,9 +670,15 @@ $f"; done
       done
     fi
     [[ -n $base ]] || refuse "нет основной ветки на origin: $repo"
+    wt_holder=$(git -C "$repo" worktree list --porcelain | awk -v b="refs/heads/$br" '$1=="worktree" {prev=$0} $1=="branch" && $2==b {print prev; exit}' | head -1)
+    if [[ -n $wt_holder ]]; then
+      wt_holder=${wt_holder#worktree }
+      refuse "отказ по правилу: $br зачекаутена в $wt_holder"
+    fi
     shah=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}') || exit 1
     if [[ -z $shah ]]; then
       sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=
+      if [[ $br == codex/* ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
       arch=$(git -C "$repo" ls-remote origin "refs/tags/archive/${br//\//-}-*" | awk -v s="$sha" '$1==s{print $1}') || exit 1
       if [[ -z $arch ]]; then
         git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null || {
@@ -558,8 +700,10 @@ $f"; done
       log branch "$(realpath "$repo"):$br" "$sha" - - - deleted || exit 1
       exit 0
     fi
-    sha=$shah
+    sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=$shah
     git -C "$repo" fetch -q origin "$br" "${base#origin/}" || exit 1
+    if [[ $br == codex/* ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
+    sha=$shah
     est=$(git -C "$repo" bundle create - "refs/remotes/origin/$br" --not "$base" 2>/dev/null | wc -c)
     avail=$(df --output=avail -B1 "$BK" | tail -1)
     (( avail >= 2*est )) || fail "мало места в $BK"
@@ -577,7 +721,13 @@ $f"; done
     log branch "$obj" "$sha" "$tag" "$backup" "$bsum" backup-ok
     git -C "$repo" push -q --force-with-lease="refs/heads/$br:$shah" origin ":refs/heads/$br" || exit 1
     left=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}')
-    [[ -z $left ]] && { log branch "$obj" "$sha" "$tag" "$backup" "$bsum" deleted; exit 0; }
+    if [[ -z $left ]]; then
+      if [[ $br == codex/* ]]; then
+        local_sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || local_sha=
+        [[ -z $local_sha ]] || git -C "$repo" update-ref -d "refs/heads/$br" "$local_sha" || exit 1
+      fi
+      log branch "$obj" "$sha" "$tag" "$backup" "$bsum" deleted; exit 0
+    fi
     exit 1
     ;;
   *) refuse 'usage' ;;

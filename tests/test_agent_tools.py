@@ -128,6 +128,8 @@ class ToolHelpContractTest(unittest.TestCase):
             # dcfg-9uhb3 owns the --help fixes for these scripts.
             if name in {"bin/ship", "bin/ship-post"}:
                 continue
+            if name == "bin/code-channel":
+                continue
             scripts.append((name, ROOT / name))
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -175,6 +177,22 @@ class ToolHelpContractTest(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("usage:", result.stdout)
+                    self.assertFalse(stub_log.exists() and stub_log.stat().st_size)
+
+            for arguments in (("--help",), ("audit", "/missing", "/missing/tz.md")):
+                with self.subTest(script="bin/code-channel", arguments=arguments):
+                    stub_log.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        [str(ROOT / "bin/code-channel"), *arguments],
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        timeout=10,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 64, result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("/root/workspaces/tools/bin/code-agent", result.stderr)
                     self.assertFalse(stub_log.exists() and stub_log.stat().st_size)
 
 
