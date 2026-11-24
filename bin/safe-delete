@@ -17,7 +17,7 @@ allow_client_wt=
 allow_client_tracked=
 client_pins=()
 tmps=()
-trap 'rm -f -- "${tmps[@]}"' EXIT
+trap 'rm -f -- "${tmps[@]}"' EXIT INT TERM HUP
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 log_batch(){ local r; { flock -x 9 || return 1; local n; : >>"$led" || return 1; if [[ -n ${deps_note:-} ]]; then for r in "$@"; do printf '%s\t%s\n' "$r" "$deps_note" >>"$led" || return 1; done; else printf '%s\n' "$@" >>"$led" || return 1; fi; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; log_n=$((n-${#@}+1)); } 9>>"$led.lock"; }
