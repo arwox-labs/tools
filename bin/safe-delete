@@ -662,7 +662,19 @@ $f"; done
     repo=$1; br=$2
     git check-ref-format --branch "$br" >/dev/null || refuse "некорректное имя ветки: $br"
     [[ $br == -* || $br == refs/* || $br == heads/* || $br == *'*'* || $br == *'?'* || $br == *'['* ]] && refuse "некорректное имя ветки: $br"
-    [[ $br == main || $br == master || $br == HEAD ]] && refuse "отказ по правилу: $br"
+    [[ $br == main || $br == master || $br == HEAD || $br == dev || $br == develop || $br == release/* ]] && refuse "отказ по правилу: $br"
+    agent=
+    case $br in
+      feat/*|fix/*|chore/*) agent=${br#*/}; agent=${agent%%/*} ;;
+      *) agent=${br%%/*} ;;
+    esac
+    if [[ -n ${SAFE_DELETE_AGENT:-} && $agent != "${SAFE_DELETE_AGENT}" ]]; then
+      refuse "отказ по правилу: чужая ветка $br (агент ${SAFE_DELETE_AGENT})"
+    fi
+    ag=$(case $br in
+      codex/*|claude/*|opencode/*) echo 1 ;;
+      feat/*|fix/*|chore/*) case ${br#*/} in codex/*|claude/*|opencode/*) echo 1 ;; esac ;;
+    esac)
     if [[ $GH == true ]]; then
       url=$(git -C "$repo" remote get-url origin) || exit 1
       rr=$(repo_of "$url")
@@ -691,7 +703,7 @@ $f"; done
     shah=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}') || exit 1
     if [[ -z $shah ]]; then
       sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=
-      if [[ $br == codex/* ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
+      if [[ -n $ag ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
       arch=$(git -C "$repo" ls-remote origin "refs/tags/archive/${br//\//-}-*" | awk -v s="$sha" '$1==s{print $1}') || exit 1
       if [[ -z $arch ]]; then
         git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null || {
@@ -715,7 +727,7 @@ $f"; done
     fi
     sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=$shah
     git -C "$repo" fetch -q origin "$br" "${base#origin/}" || exit 1
-    if [[ $br == codex/* ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
+    if [[ -n $ag ]] && ! git -C "$repo" merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then refuse "отказ по правилу: $br"; fi
     sha=$shah
     est=$(git -C "$repo" bundle create - "refs/remotes/origin/$br" --not "$base" 2>/dev/null | wc -c)
     avail=$(df --output=avail -B1 "$BK" | tail -1)
@@ -735,7 +747,7 @@ $f"; done
     git -C "$repo" push -q --force-with-lease="refs/heads/$br:$shah" origin ":refs/heads/$br" || exit 1
     left=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}')
     if [[ -z $left ]]; then
-      if [[ $br == codex/* ]]; then
+      if [[ -n $ag ]]; then
         local_sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || local_sha=
         [[ -z $local_sha ]] || git -C "$repo" update-ref -d "refs/heads/$br" "$local_sha" || exit 1
       fi

@@ -28,6 +28,8 @@ fi
 
 if [ "$name" = "commit-msg" ]; then
   [ -x "$CG" ] && { "$CG" commit-msg "$1" || exit $?; }
+  # owner 24.11: every commit carries the agent+model tag
+  [ -x /root/workspaces/projects/.githooks/commit-msg ] && /root/workspaces/projects/.githooks/commit-msg "$1"
 fi
 
 if [ "$name" = "post-commit" ]; then
@@ -62,7 +64,7 @@ if [ "$name" = "pre-push" ]; then
           b=${rref#refs/heads/}
           if [ "$lsha" = "$Z" ]; then
             case "$b" in
-              main|master) echo "pre-push: delete of $b refused" >&2; exit 1 ;;
+              main|master|dev|develop|release/*) echo "pre-push: delete of $b refused" >&2; exit 1 ;;
             esac
             t=$(printf %s "$b" | tr / -)
             ok=
@@ -73,6 +75,27 @@ if [ "$name" = "pre-push" ]; then
           elif [ "$rsha" != "$Z" ] && ! git merge-base --is-ancestor "$rsha" "$lsha" 2>/dev/null; then
             echo "pre-push: non-fast-forward update of $b refused" >&2
             exit 1
+          fi
+          if [ "$lsha" != "$Z" ]; then
+            case "$b" in
+              main|master|dev|develop|release/*)
+                echo "pre-push: direct push to $b refused; push a topic branch and open a PR" >&2
+                exit 1
+                ;;
+            esac
+            # naming gate for NEW branches only (remote sha zeros)
+            if [ "$rsha" = "$Z" ]; then
+              case "$b" in
+                feat/codex/[A-Za-z0-9][A-Za-z0-9._-]*|feat/claude/[A-Za-z0-9][A-Za-z0-9._-]*|feat/opencode/[A-Za-z0-9][A-Za-z0-9._-]*|fix/codex/[A-Za-z0-9][A-Za-z0-9._-]*|fix/claude/[A-Za-z0-9][A-Za-z0-9._-]*|fix/opencode/[A-Za-z0-9][A-Za-z0-9._-]*|chore/codex/[A-Za-z0-9][A-Za-z0-9._-]*|chore/claude/[A-Za-z0-9][A-Za-z0-9._-]*|chore/opencode/[A-Za-z0-9][A-Za-z0-9._-]*) ;;
+                codex/[A-Za-z0-9][A-Za-z0-9._-]*|claude/[A-Za-z0-9][A-Za-z0-9._-]*|opencode/[A-Za-z0-9][A-Za-z0-9._-]*)
+                  echo "pre-push: warning: legacy branch name $b accepted; prefer <type>/<agent>/<atom>-<slug>" >&2
+                  ;;
+                *)
+                  echo "pre-push: имя ветки '$b' недопустимо; нужно feat|fix|chore/<codex|claude|opencode>/<slug> или codex|claude|opencode/<slug>" >&2
+                  exit 1
+                  ;;
+              esac
+            fi
           fi
           ;;
       esac
