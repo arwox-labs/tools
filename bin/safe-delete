@@ -344,11 +344,19 @@ deps_scan(){
   else srcs=(/root/workspaces/tools/ecosystem.config.js /etc/cron.d /etc/systemd/system /root/.config/systemd/user /root/.pm2/dump.pm2 /root/workspaces/tools/scripts /root/workspaces/tools/bin); fi
   for k in "${!srcs[@]}"; do [[ -e ${srcs[k]} ]] && srcs[k]=$(realpath -e "${srcs[k]}"); done
   mkt || return 0
+  local -a fsrc=() da=()
+  for k in "${!srcs[@]}"; do [[ -d ${srcs[k]} ]] && fsrc+=("${srcs[k]}") || da+=("${srcs[k]}"); done
+  mkt || return 1; sfl=$tf; : >"$sfl"
+  ((${#fsrc[@]})) && find "${fsrc[@]}" -maxdepth 2 -type f -print0 2>/dev/null | xargs -0 -r realpath -e -- 2>/dev/null >"$sfl"
+  mkt || return 1
   { [[ -n ${SAFE_DELETE_CRONTAB_FILE:-} ]] && ( exec crontab -l ) <"$SAFE_DELETE_CRONTAB_FILE" 2>/dev/null
     crontab -l 2>/dev/null
-    grep -rIsHn --exclude-dir=node_modules --exclude-dir=.git -F -e "$t" -e "$b" -- "${srcs[@]}" 2>/dev/null; } | grep -F -e "$t" -e "$b" >"$tf"
+    (( ${#da[@]} )) && grep -rIsHn --exclude-dir=node_modules --exclude-dir=.git -F -e "$t" -e "$b" -- "${da[@]}" 2>/dev/null
+    while IFS= read -r k; do grep -Hn -F -e "$t" -e "$b" -- "$k" 2>/dev/null; done <"$sfl"; } >"$tf"
   local -a hits=() out=() mint=()
   [[ -d $tr ]] && mapfile -t mint < <(find "$tr" -type f 2>/dev/null)
+  local -A miss=() nseen=()
+  local cap=200 re=
   while IFS= read -r l; do
     [[ -n $l ]] || continue
     k=${l%%:*}; [[ $k == /* ]] || continue
@@ -356,17 +364,20 @@ deps_scan(){
     [[ $s -ef $self ]] && continue
     l=${l#"$k"}; l=${l#:}; hit=${l%%:*}; l=${l#*:}
     [[ $s -ef $tr ]] && continue
+    if [[ -v nseen[$s] ]]; then ((nseen[$s]>=cap)) && continue
+    else [[ ${miss[$s]:-} == t ]] && continue; fi
+    re='(^|[[:space:]"'"'"'=:,()/])'"$b"'([[:space:]"'"'"'=:,()/]|$)'
+    [[ $l =~ $re ]] || continue
     if [[ -d $tr ]]; then
       in=
       for k in "${mint[@]}"; do [[ -n $k && $l == *"$k"* ]] && { in=$k; break; }; done
       [[ -n $in ]] || [[ $l == *"$tr"[\"\'\ ,}]* ]] || continue
       inv=${inv:-${in:-$tr}}
-      hits+=("$s"$'\t'"$hit"$'\t'"$l")
     else
-      [[ $l == *"$tr"* ]] || continue
       inv=${inv:-$tr}
-      hits+=("$s"$'\t'"$hit"$'\t'"$l")
     fi
+    if [[ -v nseen[$s] ]]; then nseen[$s]=$((nseen[$s]+1)); else nseen[$s]=1; fi
+    hits+=("$s"$'\t'"$hit"$'\t'"$l")
   done <"$tf"
   for h in "${hits[@]}"; do
     s=${h%%$'\t'*}; h=${h#*$'\t'}; hit=${h%%$'\t'*}; l=${h#*$'\t'}
