@@ -28,6 +28,8 @@ fi
 
 if [ "$name" = "commit-msg" ]; then
   [ -x "$CG" ] && { "$CG" commit-msg "$1" || exit $?; }
+  # owner 24.11: every commit carries the agent+model tag
+  [ -x /root/workspaces/projects/.githooks/commit-msg ] && /root/workspaces/projects/.githooks/commit-msg "$1"
 fi
 
 if [ "$name" = "post-commit" ]; then
