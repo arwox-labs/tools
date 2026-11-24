@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] init [--fast] <root> | <file|dir|worktree|tmp|cache|link|restore|purge|dup|check|repo-autodelete> <path>… | branch <repo> <branch> [--abandon]  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] init [--fast] <root> | <file|dir|worktree|tmp|cache|link|restore|purge|dup|check|repo-autodelete> <path>… | file|dir [--ignore-deps] <path>… | branch <repo> <branch> [--abandon]  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -20,7 +20,7 @@ tmps=()
 trap 'rm -f -- "${tmps[@]}"' EXIT
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
-log_batch(){ { flock -x 9 || return 1; local n; : >>"$led" || return 1; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; printf '%s\n' "$@" >>"$led" || return 1; log_n=$((n+1)); } 9>>"$led.lock"; }
+log_batch(){ local r; { flock -x 9 || return 1; local n; : >>"$led" || return 1; if [[ -n ${deps_note:-} ]]; then for r in "$@"; do printf '%s\t%s\n' "$r" "$deps_note" >>"$led" || return 1; done; else printf '%s\n' "$@" >>"$led" || return 1; fi; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; log_n=$((n-${#@}+1)); } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
 refuse(){ local m=$*; [[ $m == *'— route: '* ]] || m+=" — route: safe-delete --help"; echo "safe-delete: $m" >&2; exit 2; }
 mkt(){ tf=$(mktemp "${TMPDIR:-/tmp}/safe-delete.XXXXXX") || return 1; tmps+=("$tf"); }
@@ -335,6 +335,62 @@ batch_delete(){
   for p in "${cps[@]}"; do out[$p]="удалено: $p | основание: копия ${copy[$p]} | восстановить: safe-delete restore $((dstart+ci))"; ci=$((ci+1)); done
   for p in "$@"; do echo "${out[$p]}"; done
 }
+deps_scan(){
+  local t=$1 b=${1##*/} tr k s l h dt inv hit in
+  local -a srcs=()
+  tr=$(realpath -e "$1" 2>/dev/null) || return 0
+  [[ -n $b ]] || return 0
+  if [[ -n ${SAFE_DELETE_DEPS_SOURCES:-} ]]; then IFS=: read -ra srcs <<< "$SAFE_DELETE_DEPS_SOURCES"
+  else srcs=(/root/workspaces/tools/ecosystem.config.js /etc/cron.d /etc/systemd/system /root/.config/systemd/user /root/.pm2/dump.pm2 /root/workspaces/tools/scripts /root/workspaces/tools/bin); fi
+  for k in "${!srcs[@]}"; do [[ -e ${srcs[k]} ]] && srcs[k]=$(realpath -e "${srcs[k]}"); done
+  mkt || return 0
+  { [[ -n ${SAFE_DELETE_CRONTAB_FILE:-} ]] && ( exec crontab -l ) <"$SAFE_DELETE_CRONTAB_FILE" 2>/dev/null
+    crontab -l 2>/dev/null
+    grep -rIsHn --exclude-dir=node_modules --exclude-dir=.git -F -e "$t" -e "$b" -- "${srcs[@]}" 2>/dev/null; } | grep -F -e "$t" -e "$b" >"$tf"
+  local -a hits=() out=() mint=()
+  [[ -d $tr ]] && mapfile -t mint < <(find "$tr" -type f 2>/dev/null)
+  while IFS= read -r l; do
+    [[ -n $l ]] || continue
+    k=${l%%:*}; [[ $k == /* ]] || continue
+    s=$(realpath -e "$k" 2>/dev/null) || continue
+    [[ $s -ef $self ]] && continue
+    l=${l#"$k"}; l=${l#:}; hit=${l%%:*}; l=${l#*:}
+    [[ $s -ef $tr ]] && continue
+    if [[ -d $tr ]]; then
+      in=
+      for k in "${mint[@]}"; do [[ -n $k && $l == *"$k"* ]] && { in=$k; break; }; done
+      [[ -n $in ]] || [[ $l == *"$tr"[\"\'\ ,}]* ]] || continue
+      inv=${inv:-${in:-$tr}}
+      hits+=("$s"$'\t'"$hit"$'\t'"$l")
+    else
+      [[ $l == *"$tr"* ]] || continue
+      inv=${inv:-$tr}
+      hits+=("$s"$'\t'"$hit"$'\t'"$l")
+    fi
+  done <"$tf"
+  for h in "${hits[@]}"; do
+    s=${h%%$'\t'*}; h=${h#*$'\t'}; hit=${h%%$'\t'*}; l=${h#*$'\t'}
+    dt=$(grep -o 'name:[[:space:]]*["'"'"'][^"'"'"']*' "$s" 2>/dev/null | head -n1 | sed 's/.*["'"'"']//')
+    out+=("$s:$hit${dt:+ $dt} ${l:0:60}")
+  done
+  ((${#out[@]})) || return 0
+  printf '%s\n' "$inv"
+  printf '%s\n' "${out[@]:0:5}"
+}
+deps_guard(){
+  local t=$1 line h sub
+  deps=$(deps_scan "$t") || deps=
+  [[ -n $deps ]] || return 0
+  sub=${deps%%$'\n'*}; deps=${deps#*$'\n'}
+  while IFS= read -r h; do line+="  $h"$'\n'; done <<< "$deps"
+  if [[ -n $ignore_deps ]]; then
+    deps_note=$(sed 's/^/зависимость: /' <<< "$deps" | paste -sd ';')
+    echo "safe-delete: --ignore-deps: $sub используется, зависимости:" >&2
+    printf '%s' "$line" >&2
+    return 0
+  fi
+  refuse "отказ по правилу: $t используется: $sub"$'\n'"$line"
+}
 is_cache(){
   local p=$1 s; local -a segs
   [[ $p == "$HOME"/.cache/* ]] && return 0
@@ -363,9 +419,16 @@ cache_del(){
   log_batch "${bl[@]}" || return 1
   for p in "$@"; do echo "удалено: $p | основание: кэш, без копии"; done
 }
-[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>'
+[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | file|dir [--ignore-deps] <path>… | branch <repo> <branch>'
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
+ignore_deps=; deps_note=
+args=()
+for a in "$@"; do
+  if [[ $a == --ignore-deps && ( $cmd == file || $cmd == dir ) ]]; then ignore_deps=1; else args+=("$a"); fi
+done
+set -- "${args[@]}"
+if [[ ( $cmd == file || $cmd == dir ) && $ignore_deps && $# -eq 0 ]]; then refuse 'usage'; fi
 if [[ -n ${SAFE_DELETE_SANDBOX:-} ]]; then [[ $SAFE_DELETE_SANDBOX == /tmp/* ]] || refuse "корень не под /tmp: $SAFE_DELETE_SANDBOX"; fi
 if [[ ( $cmd == dir || $cmd == worktree ) && $# -gt 1 ]]; then
   ok_n=0; failed_n=0
@@ -421,6 +484,7 @@ case "$cmd" in
       [[ -f $p ]] || refuse "не обычный файл: $p"
       [[ ${seen[$p]:-} ]] && continue
       seen[$p]=1; paths+=("$p"); [[ -L $raw ]] && nolink[$p]=1
+      deps_guard "$p"
     done
     git_batch "${paths[@]}" || exit 1
     client_pinned
@@ -459,6 +523,7 @@ case "$cmd" in
     ;;
   dir)
     [[ $# -eq 1 ]] || refuse 'usage'; allow_client_wt=1; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
+    deps_guard "$dir"
     if ((${#client_pins[@]} == 0)) && is_cache "$dir" && ! tracked_in "$dir"; then cache_del "$dir" || exit 1; exit 0; fi
     if [[ $dir == "$sandbox"/test-* && ${dir#"$sandbox"/} != */* ]]; then allow_git_under=$dir; force_copy=1
       for s in .beads .codex; do
