@@ -1,0 +1,62 @@
+#!/bin/sh
+# Owner law 24.11: every commit carries the agent+model that wrote the code.
+# Installed machine-wide through core.hooksPath=/root/workspaces/projects/.githooks;
+# runs for every repository, safe to skip when the identity is unknown.
+#
+# Forms:  codex: <msg>
+#         claude: <msg>
+#         opencode-<model>: <msg>          (alibaba-token-plan, any non-go provider)
+#         opencode-go-<model>: <msg>       (opencode-go provider)
+# A machine-readable trailer line is appended:  Agent: <tag>[; Session: <id>]
+#
+# Identity sources, in order (a Claude shell may launch opencode, so CLAUDE_* must not win):
+#   1. OPENCODE_SESSION_ID -> model looked up in ~/.local/share/opencode/opencode.db (session_v2)
+#   2. CODEX_*             -> codex
+#   3. CLAUDE*/CLAUDECODE  -> claude
+MSG="$1"
+[ -n "$MSG" ] && [ -f "$MSG" ] || exit 0
+
+# already tagged (reword / amend): do nothing
+first=$(head -n 1 "$MSG")
+case "$first" in
+  codex:*|claude:*|opencode:*|opencode-*:*) exit 0 ;;
+esac
+
+tag=""
+if [ -n "${OPENCODE_SESSION_ID:-}" ]; then
+  sid=$(printf '%s' "$OPENCODE_SESSION_ID" | tr -cd 'a-zA-Z0-9_')
+  row=""
+  if command -v sqlite3 >/dev/null 2>&1; then
+    row=$(sqlite3 -readonly -cmd '.timeout 800' "$HOME/.local/share/opencode/opencode.db" \
+      "SELECT json_extract(model,'\$.id') || '|' || json_extract(model,'\$.providerID') FROM session_v2 WHERE id='$sid' LIMIT 1;" 2>/dev/null)
+  fi
+  mid=${row%%|*}
+  pid=${row##*|}
+  case "$pid" in
+    *go*) base=opencode-go ;;
+    *)    base=opencode ;;
+  esac
+  if [ -n "$mid" ] && [ "$mid" != "$row" ]; then
+    mid=$(printf '%s' "$mid" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9._-')
+    [ -n "$mid" ] && tag="$base-$mid" || tag="$base"
+  else
+    tag="$base"
+  fi
+elif [ -n "${CODEX_SESSION_ID:-}${CODEX_SANDBOX:-}${CODEX_HOME:-}" ]; then
+  tag=codex
+elif [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SSE_PORT:-}" ]; then
+  tag=claude
+fi
+
+[ -n "$tag" ] || exit 0
+
+tmp="$MSG.agenttag.$$"
+{ printf '%s: ' "$tag"; cat "$MSG"; } > "$tmp" && mv -f "$tmp" "$MSG"
+if ! grep -q '^Agent: ' "$MSG"; then
+  if [ -n "${OPENCODE_SESSION_ID:-}" ]; then
+    printf '\nAgent: %s; Session: %s\n' "$tag" "$OPENCODE_SESSION_ID" >> "$MSG"
+  else
+    printf '\nAgent: %s\n' "$tag" >> "$MSG"
+  fi
+fi
+exit 0

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Shared contour pre-commit. Installed machine-wide with `git config --global core.hooksPath
+# /root/workspaces/projects/.githooks`, so it must stay safe for every repository.
+# The data/ rule belongs to the agent-contour work tree only (TEAM-RULES §8).
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)
+if [ "$BRANCH" = "data/live" ]; then
+  exit 0
+fi
+if [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "/root/workspaces/projects" ]; then
+  :
+else
+if git diff --cached --name-only | grep -q '^data/'; then
+  echo "ERROR [pre-commit] data/ files staged on branch '$BRANCH'." >&2
+  echo "  TEAM-RULES §8: data/ commits belong on data/live only." >&2
+  exit 1
+fi
+fi
+/root/.local/bin/gitleaks git --staged --no-banner --redact
+if [ $? -ne 0 ]; then
+  echo 'BLOCKED: gitleaks нашёл секрет в staged-файлах' >&2
+  exit 1
+fi
