@@ -21,6 +21,7 @@ const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
 const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
 const hhBotEnv = loadEnvFile('/root/workspaces/secrets/projects/arwox-biz/hr/bot/.env');
 const formsBackupEnv = loadEnvFile('/root/workspaces/secrets/system/infra/yc-serverless/functions/arwox-lead-form/.env');
+const kintDemoEnv = loadEnvFile('/root/workspaces/secrets/projects/kint-b24/demo.env');
 
 module.exports = {
   apps: [
@@ -1318,6 +1319,27 @@ module.exports = {
       env: formsGwGuardEnv,
       error_file: '/root/.pm2/logs/yc-savings-report-error.log',
       out_file: '/root/.pm2/logs/yc-savings-report-out.log'
+    },
+    {
+      // kint-b24-demo — демо КИНТ↔Б24 (список заявок, карточка, PDF счёта), basic-auth fail-closed.
+      // Владелец 24.11.2026: перенести голый php -S (pid 3455198) под pm2, чтобы воскресал после ребута.
+      // Секреты не в коде: DEMO_AUTH_* загружаются из secrets/projects/kint-b24/demo.env (CONFIGURATION.md:14).
+      name: 'kint-b24-demo',
+      time: true,
+      merge_logs: true,
+      script: '/usr/bin/php',
+      args: ['-S', '0.0.0.0:8080', '-t', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo'],
+      cwd: '/root/workspaces/projects/clients/sanatory-avto/kint-b24',
+      interpreter: 'none',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: true,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      env: kintDemoEnv,
+      error_file: '/root/.pm2/logs/kint-b24-demo-error.log',
+      out_file: '/root/.pm2/logs/kint-b24-demo-out.log'
     }
   ]
 };
