@@ -113,7 +113,7 @@ archive() {
     record=$(awk -F '\t' -v obj="$repo:$br" -v sha="$tip" '
         $2=="branch" && $3==obj && $4==sha {
             if ($8=="backup-ok") { b=NR; tag=$5; file=$6; sum=$7 }
-            if ($8=="deleted" && b && $5==tag && $6==file && $7==sum) d=NR
+            if ($8 ~ /^deleted/ && b && $5==tag && $6==file && $7==sum) d=NR
         }
         END { if (!(b && d>b)) exit 1; print tag "\t" file "\t" sum "\t" d }
     ' "$ledger") || die 'missing matching backup-ok and deleted rows'
