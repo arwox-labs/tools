@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# safe-delete dependency guard — acceptance test (T1..T5).
+# Contract: file/dir refuse (exit 2) when a live reference names the target;
+# --ignore-deps deletes anyway, backup and ledger row still happen and name
+# the dependents; a self-reference never counts.
+# All fixtures live under $d (/tmp), never rm: cleanup goes through `safe-delete tmp`.
+set -u
+export GIT_CONFIG_NOSYSTEM=1
+export SAFE_DELETE_GH=false
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d /tmp/safe-delete-deps-test.XXXXXX)
+export SAFE_DELETE_ROOTS="$d"
+export SAFE_DELETE_BK="$d/bk"
+bk=$SAFE_DELETE_BK
+src=$d/src
+mkdir -p "$src" "$d/cron.d"
+cronf=$d/cron.txt; : >"$cronf"
+unit="$src/live.service"; printf 'ExecStart=/usr/bin/true\n' >"$unit"
+dump=$d/dump.pm2; : >"$dump"
+sd=("$bin/safe-delete" --bk "$bk")
+ok=0; fail=0
+pass(){ echo "PASS $1: $2"; ok=$((ok+1)); }
+bad(){ echo "FAIL $1: $2"; fail=$((fail+1)); }
+eco(){ printf 'module.exports = { apps: [ { name: %s, script: %s, cwd: %s } ] }\n' "$3" "$1" "$2" >"$src/eco.js"; }
+deps(){ SAFE_DELETE_DEPS_SOURCES="$src:$cronf:$d/cron.d:$unit:$dump" SAFE_DELETE_CRONTAB_FILE=$cronf "${sd[@]}" "$@"; }
+trap '"$bin/safe-delete" --bk "$bk" tmp "$d" >/dev/null 2>&1 || rm -rf "$d"' EXIT
+
+# T1: referenced file -> exit 2, dependent named, file survives
+f1=$d/sched1.sh; printf '#!/bin/sh\n' >"$f1"
+eco "$f1" /root sched-one
+out=$(deps file "$f1" 2>&1); rc=$?
+if [[ $rc == 2 && -f $f1 && $out == *"safe-delete: отказ по правилу: $f1 используется:"* && $out == *eco.js*sched-one* ]]; then
+  pass 1 "rc=2 survives=yes named=eco.js(sched-one)"
+else bad 1 "rc=$rc exists=$([[ -e $f1 ]] && echo yes || echo no) out=$(printf %q "$out")"; fi
+
+# T2: same with --ignore-deps -> deleted, backup exists, ledger row names the dependent
+f2=$d/sched2.sh; printf '#!/bin/sh\n' >"$f2"
+eco "$f2" /root sched-two
+out=$(deps file --ignore-deps "$f2" 2>&1); rc=$?
+cp2="$bk/files/$(date +%Y%m%d)${f2}"
+row=$(grep -Ff <(printf '%s\n' "$f2") "$bk/ledger.tsv" 2>/dev/null | grep -c 'sched-two')
+if [[ $rc == 0 && ! -e $f2 && -n $cp2 && -f $cp2 && $(cat "$cp2") == '#!/bin/sh' && $row == 2 && $out == *'зависимости'*sched-two* ]]; then
+  pass 2 "rc=0 deleted=yes backup=$([[ -f $cp2 ]] && echo yes || echo no) ledger_names_dep=yes"
+else bad 2 "rc=$rc exists=$([[ -e $f2 ]] && echo yes || echo no) copy=$(printf %q "$cp2") rows=$row out=$(printf %q "$out")"; fi
+
+# T3: unreferenced file -> deleted normally
+f3=$d/plain3.txt; printf 'plain\n' >"$f3"
+out=$(deps file "$f3" 2>&1); rc=$?
+if [[ $rc == 0 && ! -e $f3 && $out == *"удалено: $f3"* ]]; then
+  pass 3 "rc=0 deleted=yes"
+else bad 3 "rc=$rc exists=$([[ -e $f3 ]] && echo yes || echo no) out=$(printf %q "$out")"; fi
+
+# T4: directory containing a referenced script -> refused, tree survives
+mkdir -p "$d/pkg4/sub"
+f4=$d/pkg4/sub/sched4.sh; printf '#!/bin/sh\n' >"$f4"
+printf 'keep\n' >"$d/pkg4/sub/keep.txt"
+eco "$f4" "$d/pkg4" sched-four
+out=$(deps dir "$d/pkg4" 2>&1); rc=$?
+if [[ $rc == 2 && -f $f4 && -f $d/pkg4/sub/keep.txt && $out == *"используется: $f4"* ]]; then
+  pass 4 "rc=2 tree_survives=yes named=sched-four"
+else bad 4 "rc=$rc script=$([[ -e $f4 ]] && echo yes || echo no) out=$(printf %q "$out")"; fi
+
+# T5: own content and a cron line naming it are not dependencies; eco.js is reset — a scheduler entry pointing AT the target is a real dependency (case 1)
+f5=$d/self5.sh; printf '#!/bin/sh\necho %s\n' "$f5" >"$f5"
+eco /root /opt/no-target sched-five
+out=$(deps file "$f5" 2>&1); rc=$?
+if [[ $rc == 0 && ! -e $f5 ]]; then
+  pass 5 "rc=0 self_ref_ignored=yes"
+else bad 5 "rc=$rc exists=$([[ -e $f5 ]] && echo yes || echo no) out=$(printf %q "$out")"; fi
+
+echo "итог: PASS $ok, FAIL $fail"
+[[ $fail == 0 ]]
