@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+refuse() { printf 'safe-revert: отказ: %s\n' "$1" >&2; exit 2; }
+[[ $# == 2 ]] || refuse 'ожидаются <repo-path> <merge-sha>'
+unset CDPATH GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_NAMESPACE
+export GIT_NO_REPLACE_OBJECTS=1 GIT_AUTOPUSH_OFF=1
+cd -P -- "$1" 2>/dev/null || refuse 'нет репозитория'
+repo=$(git rev-parse --show-toplevel 2>/dev/null) || refuse 'нет рабочего дерева Git'
+cd -P -- "$repo" || refuse 'нет рабочего дерева Git'
+[[ $repo != *[$'\t\r\n']* ]] || refuse 'путь несовместим с TSV'
+exec 7<. && flock -nx 7 || refuse 'рабочее дерево занято'
+sha=$(git rev-parse --verify --end-of-options "${2}^{commit}" 2>/dev/null) || refuse 'неизвестный SHA'
+parents=$(git rev-list --parents -n1 "$sha") || refuse 'не удалось прочитать родителей'
+read -ra commits <<< "$parents"
+(( ${#commits[@]} >= 3 )) || refuse 'коммит не является merge'
+
+base_ref=$(git symbolic-ref -q refs/remotes/origin/HEAD) || base_ref=
+base=
+for ref in "$base_ref" refs/remotes/origin/main refs/remotes/origin/master; do
+    [[ $ref == refs/remotes/origin/* ]] || continue
+    base=$(git rev-parse --verify --quiet "${ref}^{commit}") && break
+done
+[[ -n ${base:-} ]] || refuse 'не найдена базовая ветка origin'
+git merge-base --is-ancestor "$sha" "$base" || refuse 'merge не входит в базовую ветку origin'
+
+short=$(git rev-parse --short "$sha") || refuse 'не удалось сократить SHA'
+agent=${SAFE_DELETE_AGENT:-codex}
+[[ $agent != */* ]] || refuse 'недопустимое имя агента'
+branch="fix/$agent/revert-$short"
+git check-ref-format "refs/heads/$branch" || refuse 'недопустимое имя ветки'
+base_head="refs/heads/${ref#refs/remotes/origin/}"
+remote=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads origin "$base_head" "refs/heads/$branch" 2>/dev/null) ||
+    refuse 'не удалось проверить origin'
+current_base=
+while read -r oid name; do
+    [[ $name != "refs/heads/$branch" ]] || refuse 'ветка уже есть на origin'
+    if [[ $name == "$base_head" && $oid == "$base" ]]; then current_base=yes; fi
+done <<< "$remote"
+[[ ${current_base:-} == yes ]] || refuse 'базовая ссылка origin устарела'
+git show-ref --verify --quiet "refs/heads/$branch" && refuse 'ветка уже есть локально'
+status=$(git status --porcelain --untracked-files=all --ignore-submodules=none) ||
+    refuse 'не удалось проверить рабочее дерево'
+[[ -z $status ]] || refuse 'рабочее дерево содержит изменения'
+
+owns_branch() {
+    local source=$1
+    case $source in feat/*|fix/*|chore/*) source=${source#*/} ;; esac
+    [[ $source == "$agent/"* ]]
+}
+
+verify_github_pr() {
+    local slug=$1 source_branch
+    slug=${slug%.git}
+    [[ $slug =~ ^[a-zA-Z0-9-]+/[a-zA-Z0-9_.-]+$ && ${slug#*/} != . && ${slug#*/} != .. ]] ||
+        refuse 'не удалось определить репозиторий GitHub'
+    (( ${#commits[@]} == 3 )) || refuse 'один PR не подтверждает все ветки merge'
+    source_branch=$(
+        gh api --hostname github.com --paginate "repos/$slug/commits/$sha/pulls" 2>/dev/null |
+            jq -ser --arg repo "$slug" --arg sha "$sha" --arg tip "${commits[2]}" '
+                add | map(select(.merged_at != null and .merge_commit_sha == $sha))
+                | select(length == 1) | .[0]
+                | select((.base.repo.full_name | ascii_downcase) == ($repo | ascii_downcase)
+                    and (.base.repo.id | type) == "number" and .head.repo.id == .base.repo.id
+                    and .head.sha == $tip)
+                | .head.ref | strings'
+    ) || refuse 'принадлежность merge не подтверждена данными PR'
+    git check-ref-format "refs/heads/$source_branch" || refuse 'некорректная ветка PR'
+    owns_branch "$source_branch" || refuse 'merge принадлежит другому агенту'
+}
+
+# Trust files are operator policy. A repository cannot appoint its own signers.
+trust_file() {
+    local setting path rc
+    setting=$(git config --show-scope --path --get "$1") || {
+        rc=$?
+        if [[ $rc == 1 && $1 == gpg.ssh.revocationFile ]]; then
+            printf '/dev/null\n'
+            return
+        fi
+        return 1
+    }
+    case $setting in global$'\t/'*|system$'\t/'*) path=${setting#*$'\t'} ;; *) return 1 ;; esac
+    [[ $path != "$repo/"* ]] || return 1
+    path=$(realpath -e -- "$path") || return 1
+    [[ -f $path && -r $path && $path != "$repo/"* ]] || return 1
+    printf '%s\n' "$path"
+}
+
+verify_git_sources() {
+    local signers revoked oid record message stamp
+    signers=$(trust_file gpg.ssh.allowedSignersFile) || refuse 'нет доверенного списка SSH-подписантов'
+    revoked=$(trust_file gpg.ssh.revocationFile) || refuse 'не удалось проверить список отозванных ключей'
+    for oid in "$sha" "${commits[@]:2}"; do
+        record=$(git -c "gpg.ssh.allowedSignersFile=$signers" -c "gpg.ssh.revocationFile=$revoked" \
+            -c gpg.ssh.program=/usr/bin/ssh-keygen -c gpg.openpgp.program=/bin/false -c gpg.x509.program=/bin/false \
+            show -s --no-show-signature --no-notes --no-decorate --format='%G?%x09%GS%n%B' "$oid" 2>/dev/null) ||
+            refuse 'не удалось проверить подпись коммита'
+        [[ ${record%%$'\n'*} == G$'\t'"$agent" ]] || refuse 'нет доверенной подписи агента'
+        message=${record#*$'\n'}
+        [[ $message == *$'\n'* ]] || refuse 'нет метки Agent'
+
+        # The installed hook can append Agent directly below a one-line merge subject.
+        stamp=$(printf '%s\n\n%s\n' "${message%%$'\n'*}" "${message#*$'\n'}" |
+            git -c trailer.separators=: interpret-trailers --parse |
+            awk 'tolower($0) ~ /^agent:/ { n++; sub(/^[^:]*:[ \t]*/, ""); value=$0 }
+                 END { if (n != 1) exit 1; print value }') || refuse 'нужна ровно одна метка Agent'
+        [[ $stamp == "$agent" || $stamp == "$agent; Session: "?* ]] || refuse 'метка Agent не совпадает с подписантом'
+    done
+}
+
+url=$(git remote get-url origin) || refuse 'не удалось определить origin'
+case $url in
+    https://github.com/*) verify_github_pr "${url#https://github.com/}" ;;
+    git@github.com:*) verify_github_pr "${url#git@github.com:}" ;;
+    ssh://git@github.com/*) verify_github_pr "${url#ssh://git@github.com/}" ;;
+    *) verify_git_sources ;;
+esac
+
+previous=$(git symbolic-ref -q HEAD) || previous=
+previous_sha=$(git rev-parse --verify HEAD) || refuse 'не удалось сохранить исходный HEAD'
+
+ledger=/root/workspaces/projects/.agent-work/backup/ledger.tsv
+exec 9>>"$ledger.lock" || refuse 'журнал недоступен'
+exec 8>>"$ledger" || refuse 'журнал недоступен'
+git switch -q --no-overwrite-ignore --no-track -c "$branch" "$base" || refuse 'не удалось создать ветку'
+[[ $(git symbolic-ref -q HEAD) == "refs/heads/$branch" ]] || refuse 'изменилась текущая ветка'
+
+restore_checkout() {
+    if [[ -n $previous ]]; then
+        git switch -q --no-overwrite-ignore --no-guess -- "${previous#refs/heads/}"
+    else
+        git switch -q --no-overwrite-ignore --detach "$previous_sha"
+    fi && git update-ref --no-deref -d "refs/heads/$branch" "$1" ||
+        refuse 'не удалось восстановить исходное состояние'
+}
+
+if ! diagnostic=$(git revert -m 1 --no-edit "$sha" 2>&1); then
+    reason='не удалось выполнить revert'
+    if git rev-parse -q --verify REVERT_HEAD >/dev/null; then
+        [[ -z $(git ls-files -u) ]] || reason='конфликт revert'
+        git revert --abort || refuse 'не удалось отменить revert'
+    fi
+    status=$(git status --porcelain) && [[ -z $status ]] || refuse 'после ошибки revert дерево содержит изменения'
+    restore_checkout "$base"
+    [[ $reason == 'конфликт revert' ]] || printf '%s\n' "$diagnostic" >&2
+    refuse "$reason"
+fi
+new=$(git rev-parse --verify HEAD) || refuse 'не удалось прочитать новый SHA'
+if ! flock -x 9 || ! printf '%s\trevert\t%s:%s\t%s\t-\t-\t-\tcreated\n' \
+        "$(date +%Y-%m-%dT%H:%M:%S)" "$repo" "$branch" "$new" >&8; then
+    restore_checkout "$new"
+    refuse 'не удалось записать журнал'
+fi
+printf '%s %s\n' "$branch" "$new"

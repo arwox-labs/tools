@@ -9,16 +9,33 @@ while read local_ref local_sha remote_ref remote_sha; do
       refs/heads/*)
         b=${remote_ref#refs/heads/}
         if [ "$local_sha" = "$Z" ]; then
+          case "$b" in
+            main|master|dev|develop|release/*)
+              echo "pre-push: delete of $b refused: protected branch" >&2
+              exit 1
+              ;;
+          esac
           t=$(printf %s "$b" | tr / -)
           ok=
           for tsha in $(git ls-remote "$2" "refs/tags/archive/$t-*" 2>/dev/null | cut -f1); do
             [ "$tsha" = "$remote_sha" ] && ok=1
           done
           [ -n "$ok" ] || { echo "pre-push: delete of $b refused: no archive tag; use tools/bin/safe-delete branch <repo> $b" >&2; exit 1; }
-        elif [ "$b" = main ] || [ "$b" = master ]; then
+        elif [ "$b" = main ] || [ "$b" = master ] || [ "$b" = dev ] || [ "$b" = develop ] || [ "${b#release/}" != "$b" ]; then
           echo "pre-push: direct push to $b refused; push a topic branch and open a PR" >&2
           exit 1
-        elif [ "$remote_sha" != "$Z" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        elif [ "$remote_sha" = "$Z" ]; then
+          case "$b" in
+            feat/codex/[A-Za-z0-9][A-Za-z0-9._-]*|feat/claude/[A-Za-z0-9][A-Za-z0-9._-]*|feat/opencode/[A-Za-z0-9][A-Za-z0-9._-]*|fix/codex/[A-Za-z0-9][A-Za-z0-9._-]*|fix/claude/[A-Za-z0-9][A-Za-z0-9._-]*|fix/opencode/[A-Za-z0-9][A-Za-z0-9._-]*|chore/codex/[A-Za-z0-9][A-Za-z0-9._-]*|chore/claude/[A-Za-z0-9][A-Za-z0-9._-]*|chore/opencode/[A-Za-z0-9][A-Za-z0-9._-]*) ;;
+            codex/[A-Za-z0-9][A-Za-z0-9._-]*|claude/[A-Za-z0-9][A-Za-z0-9._-]*|opencode/[A-Za-z0-9][A-Za-z0-9._-]*)
+              echo "pre-push: warning: legacy branch name $b accepted; prefer <type>/<agent>/<atom>-<slug>" >&2
+              ;;
+            *)
+              echo "pre-push: имя ветки '$b' недопустимо; нужно feat|fix|chore/<codex|claude|opencode>/<slug> или codex|claude|opencode/<slug>" >&2
+              exit 1
+              ;;
+          esac
+        elif ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
           echo "pre-push: non-fast-forward update of $b refused" >&2
           exit 1
         fi

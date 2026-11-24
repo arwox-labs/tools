@@ -1041,5 +1041,81 @@ printf 'dirty\n' > "$d/wt129/dirty.txt"
 out129=$("$bin/safe-delete" --bk "$d/bk129" worktree "$d/wt129" 2>&1); r129=$?
 if [[ $r129 == 2 && $out129 == *'— route:'* && $out129 == *'status --short'* && -d $d/wt129 ]]; then echo 'PASS T129 squash_dirty_refused'; ok=$((ok+1)); else echo "FAIL T129: rc=$r129 dir=$([[ -d $d/wt129 ]] && echo 1) out=${out129:0:200}"; fi
 
-[[ $ok == 127 ]] || exit 1
-echo "итог: PASS $ok, FAIL 0"
+ladder_case_inner() {
+  (
+    set -e
+    case_name=$1; case_kind=$2; case_branch=$3; case_agent=$4; case_phrase=$5
+    case_dir="$d/ladder-$case_name"
+    case_repo="$case_dir/repo"
+    case_origin="$case_dir/origin.git"
+    trap 'rm -rf "$case_dir"' EXIT
+    mkdir -p "$case_dir"
+    git init -q -b main "$case_repo"
+    git -C "$case_repo" config user.email t@t
+    git -C "$case_repo" config user.name t
+    git -C "$case_repo" commit -q --allow-empty -m main
+    git init -q --bare "$case_origin"
+    git -C "$case_repo" remote add origin "$case_origin"
+    git -C "$case_repo" push -q -u origin main
+    git -C "$case_repo" remote set-head origin main
+
+    if [[ $case_kind == unmerged || $case_kind == foreign || $case_kind == worktree || $case_kind == control ]]; then
+      git -C "$case_repo" checkout -q -b "$case_branch" main
+      git -C "$case_repo" commit -q --allow-empty -m "$case_branch"
+      if [[ $case_kind != control ]]; then git -C "$case_repo" push -q -u origin "$case_branch"; fi
+      git -C "$case_repo" checkout -q main
+      if [[ $case_kind == foreign || $case_kind == worktree || $case_kind == control ]]; then
+        git -C "$case_repo" merge -q --no-ff "$case_branch" -m "merge $case_branch"
+        git -C "$case_repo" push -q origin main
+      fi
+    else
+      git -C "$case_repo" branch "$case_branch" main
+      git -C "$case_repo" push -q origin "$case_branch"
+    fi
+
+    if [[ $case_kind == worktree ]]; then git -C "$case_repo" worktree add -q "$case_dir/worktree" "$case_branch"; fi
+    case_out="$case_dir/out"; case_err="$case_dir/err"
+    if [[ $case_agent == unset ]]; then
+      if env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_dir/bk" branch "$case_repo" "$case_branch" >"$case_out" 2>"$case_err"; then case_rc=0; else case_rc=$?; fi
+    else
+      if env SAFE_DELETE_AGENT="$case_agent" "$bin/safe-delete" --bk "$case_dir/bk" branch "$case_repo" "$case_branch" >"$case_out" 2>"$case_err"; then case_rc=0; else case_rc=$?; fi
+    fi
+    case_stdout=$(<"$case_out"); case_stderr=$(<"$case_err")
+
+    if [[ $case_kind == control ]]; then
+      printf 'CONTROL %s rc=%s stdout:\n%s\nstderr:\n%s\n' "$case_name" "$case_rc" "$case_stdout" "$case_stderr"
+      if [[ $case_rc != 0 ]] || git -C "$case_repo" show-ref --verify --quiet "refs/heads/$case_branch"; then
+        printf 'FAILDETAIL %s: command_rc=%s stdout=%s stderr=%s\n' "$case_name" "$case_rc" "$case_stdout" "$case_stderr"
+        exit 1
+      fi
+    else
+      if [[ $case_rc != 2 || $case_stderr != *'отказ по правилу'* || ( -n $case_phrase && $case_stderr != *"$case_phrase"* ) ]] || ! git -C "$case_repo" show-ref --verify --quiet "refs/heads/$case_branch" || ! git --git-dir="$case_origin" show-ref --verify --quiet "refs/heads/$case_branch" || { [[ $case_kind == worktree ]] && [[ ! -d $case_dir/worktree ]]; }; then
+        printf 'FAILDETAIL %s: command_rc=%s local_ref=%s origin_ref=%s stdout=%s stderr=%s\n' "$case_name" "$case_rc" "$(git -C "$case_repo" show-ref --verify --quiet "refs/heads/$case_branch" && echo present || echo missing)" "$(git --git-dir="$case_origin" show-ref --verify --quiet "refs/heads/$case_branch" && echo present || echo missing)" "$case_stdout" "$case_stderr"
+        exit 1
+      fi
+    fi
+  )
+}
+
+ladder_case() {
+  ladder_case_inner "$@"
+  case_rc=$?
+  if [[ $case_rc == 0 ]]; then echo "PASS $1"; ok=$((ok+1)); else echo "FAIL $1: fixture or assertion failed (rc=$case_rc)"; fi
+}
+
+# T130-T139: protected, agent-owned, merged, and worktree branch ladder
+ladder_case T130 unmerged codex/unmerged-x unset ''
+ladder_case T131 unmerged claude/unmerged-x claude ''
+ladder_case T132 unmerged opencode/unmerged-x opencode ''
+ladder_case T133 protected dev unset ''
+ladder_case T134 protected develop unset ''
+ladder_case T135 protected release/1.0 unset ''
+ladder_case T136 foreign codex/merged-x claude 'чужая ветка'
+ladder_case T137 control codex/merged-x codex ''
+ladder_case T138 control codex/merged-x unset ''
+ladder_case T139 worktree worktree-x unset ''
+
+total=137
+failed=$((total-ok))
+echo "итог: PASS $ok, FAIL $failed"
+[[ $failed == 0 ]]
