@@ -78,6 +78,7 @@ exec 9>>"$ledger.lock" || refuse 'журнал недоступен'
 exec 8>>"$ledger" || refuse 'журнал недоступен'
 git switch -q --no-overwrite-ignore --no-track -c "$branch" "$base" || refuse 'не удалось создать ветку'
 [[ $(git symbolic-ref -q HEAD) == "refs/heads/$branch" ]] || refuse 'изменилась текущая ветка'
+export GIT_AUTOPUSH_OFF=1
 
 restore_checkout() {
     if [[ -n $previous ]]; then
@@ -106,3 +107,4 @@ if ! flock -x 9 || ! printf '%s\trevert\t%s:%s\t%s\t-\t-\t-\tcreated\n' \
     refuse 'не удалось записать журнал'
 fi
 printf '%s %s\n' "$branch" "$new"
+printf 'safe-revert: ветка %s существует только локально; доставка — решение ведущего: git -C %s push -u origin %s\n' "$branch" "$repo" "$branch" >&2

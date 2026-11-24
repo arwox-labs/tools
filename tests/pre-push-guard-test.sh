@@ -9,9 +9,13 @@
 # the pushes under test.
 set -u
 HOOKS="$(cd "$(dirname "$0")/../git-hooks" && pwd -P)"
-G="$(mktemp -d -p /var/tmp)"
-X="$(mktemp -d)"
-trap 'rm -rf -- "$G" "$X"' EXIT
+FIXTURES="$(mktemp -d -p /tmp pre-push-guard-test.XXXXXX)" || exit 1
+trap '/root/workspaces/tools/bin/safe-delete tmp "$FIXTURES" || exit 1' EXIT
+G="$FIXTURES/guarded"
+X="$FIXTURES/exempt"
+mkdir -p "$G" "$X" || exit 1
+TMPDIR="$FIXTURES"
+export TMPDIR
 ok=0
 fail=0
 pass() { ok=$((ok+1)); echo "PASS $1"; }
@@ -21,6 +25,7 @@ git init -q --bare "$G/r.git"
 git init -q --bare "$X/r.git"
 git clone -q "$G/r.git" "$G/w"
 cd "$G/w" || exit 1
+git remote set-url origin ../r.git || exit 1
 echo a >f
 git add f
 git -c user.name=t -c user.email=t@example.invalid commit -qm init
