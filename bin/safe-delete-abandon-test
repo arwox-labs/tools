@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -u
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+export SAFE_DELETE_GH=false
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d /tmp/safe-delete-abandon.XXXXXX)
+export SAFE_DELETE_ROOTS="$d"
+trap 'rm -rf "$d"' EXIT
+rm -rf "$d"/* "$d"/.[!.]* 2>/dev/null
+ok=0
+fail=0
+pass(){ echo "PASS $1"; ok=$((ok+1)); }
+bad(){ echo "FAIL $1: $2"; fail=$((fail+1)); }
+
+# a fixture whose base is not on the remote would turn an unmerged branch into a "valid" deletion
+verify_fixture(){
+  [[ $(git -C "$case_dir/repo" rev-parse origin/main) == "$(git -C "$case_dir/repo" rev-parse main)" ]] ||
+    { echo "FAIL fixture $case_dir: origin/main has no connection to local main"; exit 1; }
+}
+
+mk(){
+  case_dir=$d/$1
+  mkdir -p "$case_dir"
+  git init -q -b main "$case_dir/repo"
+  git -C "$case_dir/repo" config --unset core.hooksPath
+  git -C "$case_dir/repo" config user.email t@t
+  git -C "$case_dir/repo" config user.name t
+  git -C "$case_dir/repo" commit -q --allow-empty -m main
+  git init -q --bare "$case_dir/origin.git"
+  git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
+  git -C "$case_dir/repo" remote add origin "$case_dir/origin.git"
+  git -C "$case_dir/repo" push -q origin main
+  git -C "$case_dir/repo" fetch -q origin
+  git -C "$case_dir/repo" remote set-head origin main
+  verify_fixture
+  : "${SAFE_DELETE_GH=false}"
+  case_repo=$case_dir/repo; case_bk=$case_dir/bk
+}
+
+# T1: unmerged agent branch without the flag is still refused and survives
+mk t1
+git -C "$case_repo" checkout -q -b codex/un-x main
+git -C "$case_repo" commit -q --allow-empty -m un
+git -C "$case_repo" push -q origin refs/heads/codex/un-x
+git -C "$case_repo" checkout -q main
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/un-x >"$d/o1" 2>"$d/e1"; r1=$?
+left1=$(git -C "$case_repo" ls-remote --heads origin refs/heads/codex/un-x)
+if [[ $r1 == 2 && $r1$(cat "$d/e1") == 2*'отказ по правилу'* && -n $left1 ]]; then pass T1_refused_without_flag; else bad T1_refused_without_flag "rc=$r1 left=$left1 err=$(cat "$d/e1")"; fi
+tg1=$(git -C "$case_repo" ls-remote --tags origin 'refs/tags/archive/codex-un-x-*')
+nb1=$(find "$case_bk" -maxdepth 1 -name '*.bundle' ! -name '*.diff' 2>/dev/null | wc -l)
+if [[ -z $tg1 && $nb1 == 0 && ! -s "$case_bk/ledger.tsv" ]]; then pass T1_nothing_written; else bad T1_nothing_written "tag=$tg1 bundles=$nb1"; fi
+
+n2=0
+# T2: same branch with --abandon is deleted, fully backed up, restorable
+sha2=$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/codex/un-x)
+n2=$((n2+1)); env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/un-x --abandon >"$d/o2" 2>"$d/e2"; r2=$?
+left2=$(git -C "$case_repo" ls-remote --heads origin refs/heads/codex/un-x)
+tg2=$(git -C "$case_repo" ls-remote --tags origin "refs/tags/archive/codex-un-x-*" | awk -v s="$sha2" '$1==s{print $2}')
+b2=$(find "$case_bk" -maxdepth 1 -name 'repo-codex-un-x-*.bundle' ! -name '*.diff' | head -1)
+bv2=fail; [[ -n $b2 ]] && git -C "$case_repo" bundle verify "$b2" >/dev/null 2>&1 && bv2=ok
+df2=0
+if [ -f "$b2.diff" ]; then df2=1; fi
+lr2=$(awk -F '\t' -v p="$case_repo:codex/un-x" '$2=="branch" && $3==p {print NR"|"$4"|"$6"|"$8}' "$case_bk/ledger.tsv")
+if [[ $r2 == 0 && -z $left2 && -n $tg2 && $bv2 == ok && $df2 == 1 && -z $(git -C "$case_repo" branch --list codex/un-x) ]]; then pass T2_abandon_deleted; else bad T2_abandon_deleted "rc=$r2 left=$left2 tag=$tg2 verify=$bv2 diff=$df2 b2=[$b2] out=$(cat "$d/o2") err=$(cat "$d/e2")"; fi
+if [[ $(grep -c . <<< "$lr2") == 2 && $(grep -c "|$sha2|.*|backup-ok$" <<< "$lr2") == 1 && $(grep -c "|$sha2|.*|deleted abandon$" <<< "$lr2") == 1 ]]; then pass T2_ledger_marked; else bad T2_ledger_marked "rows=[$lr2]"; fi
+N2=$n2; env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" restore "$N2" >"$d/o2r" 2>"$d/e2r"; rr2=$?
+back2=$(git -C "$case_repo" ls-remote origin refs/heads/codex/un-x | cut -f1)
+if [[ $rr2 == 0 && $back2 == "$sha2" ]]; then pass T2_restore; else bad T2_restore "rc=$rr2 back=$back2 want=$sha2 err=$(cat "$d/e2r")"; fi
+
+# T3: protected names stay refused with the flag
+mk t3-main
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" main --abandon >"$d/o3" 2>"$d/e3"; r3=$?
+kept3=$(git -C "$case_repo" ls-remote --heads origin refs/heads/main)
+if [[ $r3 == 2 && -n $kept3 ]]; then pass T3_protected_main; else bad T3_protected_main "rc=$r3 kept=$kept3"; fi
+mk t3-dev
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" dev --abandon >"$d/o3b" 2>"$d/e3b"; r3b=$?
+if [[ $r3b == 2 && $(cat "$d/e3b") == *'отказ по правилу: dev'* && -z $(git -C "$case_repo" ls-remote --heads origin refs/heads/dev) ]]; then pass T3_protected_dev; else bad T3_protected_dev "rc=$r3b err=$(cat "$d/e3b")"; fi
+
+# T4: ownership refusal stays with the flag
+mk t4
+git -C "$case_repo" checkout -q -b codex/ok-x main
+git -C "$case_repo" commit -q --allow-empty -m ok
+git -C "$case_repo" checkout -q main
+git -C "$case_repo" merge -q --no-ff codex/ok-x -m merge
+git -C "$case_repo" push -q origin main
+env SAFE_DELETE_AGENT=claude "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/ok-x --abandon >"$d/o4" 2>"$d/e4"; r4=$?
+kept4=$(git -C "$case_repo" branch --list codex/ok-x)
+if [[ $r4 == 2 && $(cat "$d/e4") == *'чужая ветка'* && -n $kept4 ]]; then pass T4_foreign; else bad T4_foreign "rc=$r4 kept=$kept4 err=$(cat "$d/e4")"; fi
+
+# T5: no real bundle possible (branch fully merged, empty --not base) -> refuse, tag-only is NOT a backup
+mk t5
+git -C "$case_repo" checkout -q -b codex/dup-x main
+git -C "$case_repo" commit -q --allow-empty -m dup
+git -C "$case_repo" checkout -q main
+git -C "$case_repo" merge -q --no-ff codex/dup-x -m merge
+git -C "$case_repo" push -q origin main
+git -C "$case_repo" push -q origin refs/heads/codex/dup-x
+# the checkout must not hold the branch objects; a fresh clone of an origin without archive tags keeps
+# the bundle genuinely empty, so only the tag-only fallback would be able to "back the branch up"
+git -C "$case_repo" push -q origin ":refs/tags/archive/codex-dup-x-$(date +%Y%m%d)" || true
+git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
+rm -rf "$case_repo" "$case_bk"
+git clone -q "$case_dir/origin.git" "$case_repo" 2>/dev/null
+git -C "$case_repo" config --unset core.hooksPath
+git -C "$case_repo" config user.email t@t
+git -C "$case_repo" config user.name t
+git -C "$case_repo" fetch -q origin
+git -C "$case_repo" remote set-head origin main
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/dup-x --abandon >"$d/o5" 2>"$d/e5"; r5=$?
+left5=$(git -C "$case_repo" ls-remote --heads origin refs/heads/codex/dup-x)
+tg5=$(git -C "$case_repo" ls-remote --tags origin 'refs/tags/archive/codex-dup-x-*')
+nb5=$(find "$case_bk" -maxdepth 1 -name '*.bundle' ! -name '*.diff' 2>/dev/null | wc -l)
+if [[ $(cat "$d/e5") == *'без проверенного bundle'* && $r5 == 2 && -n $left5 && -z $tg5 && $nb5 == 0 && ! -s "$case_bk/ledger.tsv" ]]; then pass T5_no_bundle_refused; else bad T5_no_bundle_refused "rc=$r5 left=$left5 tag=$tg5 bundles=$nb5 ledger=$([[ -s $case_bk/ledger.tsv ]] && echo yes || echo no) local=$([[ -n $(git -C "$case_repo" branch --list codex/dup-x) ]] && echo yes || echo no) err=$(cat "$d/e5")"; fi
+
+# T6: the local-only path honours the flag as well; without it the branch stays
+mk t6
+git -C "$case_repo" checkout -q -b codex/loc-x main
+git -C "$case_repo" commit -q --allow-empty -m loc
+git -C "$case_repo" checkout -q main
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/loc-x >"$d/o6" 2>"$d/e6"; r6=$?
+kept6=$(git -C "$case_repo" branch --list codex/loc-x)
+if [[ $r6 == 2 && -n $kept6 ]]; then pass T6_local_without_flag; else bad T6_local_without_flag "rc=$r6 kept=$kept6"; fi
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/loc-x --abandon >"$d/o6b" 2>"$d/e6b"; r6b=$?
+b6=$(find "$case_bk" -maxdepth 1 -name 'repo-codex-loc-x-*.bundle' ! -name '*.diff' | head -1)
+bv6=fail; if [ -n "$b6" ] && git -C "$case_repo" bundle verify "$b6" >/dev/null 2>&1; then bv6=ok; fi
+lg6=$(awk -F '\t' '$2=="branch" && $3=="'"$case_repo"':codex/loc-x" && $8=="deleted abandon"{n=NR} END{print n}' "$case_bk/ledger.tsv")
+if [[ $r6b == 0 && -z $(git -C "$case_repo" branch --list codex/loc-x) && $bv6 == ok && -n $lg6 ]]; then pass T6_local_abandon; else bad T6_local_abandon "rc=$r6b verify=$bv6 ledger=$lg6 out=$(cat "$d/o6b") err=$(cat "$d/e6b")"; fi
+
+# T6b: local-only abandon where no bundle can be created -> exit 2, branch stays (no bundle = no deletion)
+mk t6b
+git -C "$case_repo" checkout -q -b codex/nb-x main
+git -C "$case_repo" commit -q --allow-empty -m nb
+git -C "$case_repo" checkout -q main
+mkdir -p "$d/bin6b"
+printf '#!/bin/sh\ncase " $* " in *" bundle create "*) exit 1;; esac\nexec /usr/bin/git "$@"\n' >"$d/bin6b/git"
+chmod +x "$d/bin6b/git"
+PATH="$d/bin6b:$PATH" env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/nb-x --abandon >"$d/o6c" 2>"$d/e6c"; r6c=$?
+kept6c=$(git -C "$case_repo" branch --list codex/nb-x)
+nb6c=$(find "$case_bk" -maxdepth 1 -name '*.bundle' ! -name '*.diff' 2>/dev/null | wc -l)
+del6c=$(awk -F '\t' '$2=="branch" && $3=="'"$case_repo"':codex/nb-x" && $8 ~ /^deleted/ {print $8}' "$case_bk/ledger.tsv" 2>/dev/null)
+if [[ $r6c == 2 && -n $kept6c && $nb6c == 0 && -z $del6c && $(cat "$d/e6c") == *'без проверенного bundle'* ]]; then pass T6b_no_bundle_refused; else bad T6b_no_bundle_refused "rc=$r6c kept=$kept6c bundles=$nb6c deleted=[$del6c] err=$(cat "$d/e6c")"; fi
+
+# T7: a branch checked out in another worktree is still refused with the flag
+mk t7
+git -C "$case_repo" checkout -q -b codex/wt-x main
+git -C "$case_repo" commit -q --allow-empty -m wt
+git -C "$case_repo" push -q origin refs/heads/codex/wt-x
+git -C "$case_repo" checkout -q main
+git -C "$case_repo" worktree add -q "$d/t7/wt" codex/wt-x
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" --bk "$case_bk" branch "$case_repo" codex/wt-x --abandon >"$d/o7" 2>"$d/e7"; r7=$?
+if [[ $r7 == 2 && $(cat "$d/e7") == *"зачекаутена"* && -n $(git -C "$case_repo" ls-remote --heads origin refs/heads/codex/wt-x) ]]; then pass T7_worktree_refused; else bad T7_worktree_refused "rc=$r7 err=$(cat "$d/e7")"; fi
+
+# T8: usage shows the optional flag
+u8=$("$bin/safe-delete" --help)
+env -u SAFE_DELETE_AGENT "$bin/safe-delete" branch onlyone >/dev/null 2>"$d/e8"; r8=$?
+if [[ $u8 == *'branch <repo> <branch> [--abandon]'* && $r8 == 2 && $(cat "$d/e8") == *'safe-delete: usage: safe-delete branch <repo> <branch> [--abandon]'* ]]; then pass T8_usage; else bad T8_usage "help=${u8:0:80} rc=$r8 err=$(cat "$d/e8")"; fi
+
+# T9: safe-revert sets the auto-push opt-out for the revert commit and says the branch is local
+mk t9
+printf '#!/bin/sh\nprintf "%%s\\n" "${GIT_AUTOPUSH_OFF:-unset}" >>"%s/hook9.log"\n' "$d" >"$case_repo/.git/hooks/post-commit"
+chmod +x "$case_repo/.git/hooks/post-commit"
+git -C "$case_repo" checkout -q -b codex/rv-x main
+printf 'x\n' >"$case_repo/rv.txt"
+git -C "$case_repo" add rv.txt
+git -C "$case_repo" commit -q -m rv
+git -C "$case_repo" checkout -q main
+git -C "$case_repo" merge -q --no-ff codex/rv-x -m merge
+# the merge must be on the real origin before the URL is swapped to a GitHub stub,
+# otherwise refs/remotes/origin/main never contains it and safe-revert refuses
+git -C "$case_repo" push -q origin main || exit 1
+git -C "$case_repo" fetch -q origin || exit 1
+m9=$(git -C "$case_repo" rev-parse HEAD)
+git -C "$case_repo" remote set-url origin https://github.com/t/t.git
+mkdir -p "$d/bin9"
+printf '#!/bin/sh\ncase "$*" in "ls-remote "*|*" ls-remote "*) printf "%%s\\trefs/heads/main\\n" "%s";; *) if [ -n "$GIT_DIR" ]; then exec /usr/bin/git "$@" </dev/null; else ( exec /usr/bin/git "$@" ); fi;; esac\n' \
+  "$(git --git-dir="$case_dir/origin.git" rev-parse refs/heads/main)" >"$d/bin9/git"
+cat >"$d/bin9/gh" <<EOF
+#!/bin/sh
+printf '[%s]\n' '{"merge_commit_sha":"$m9","merged_at":"2026-11-24T00:00:00Z","base":{"repo":{"full_name":"t/t","id":1}},"head":{"repo":{"id":1},"sha":"$(git -C "$case_repo" rev-parse codex/rv-x)","ref":"codex/rv-x"}}'
+EOF
+chmod +x "$d/bin9/git" "$d/bin9/gh"
+PATH="$d/bin9:$PATH" env -u SAFE_DELETE_AGENT "$bin/safe-revert" "$case_repo" "$m9" >"$d/o9" 2>"$d/e9"; r9=$?
+log9=$(cat "$d/hook9.log" 2>/dev/null)
+if [[ $r9 == 0 ]]; then pass T9_revert_ran; else bad T9_revert_ran "rc=$r9 err=$(cat "$d/e9")"; fi
+if [[ $(tail -1 <<< "$log9") == 1 ]]; then pass T9_autopush_off_at_commit; else bad T9_autopush_off_at_commit "hook_saw=[$log9]"; fi
+if [[ -z $(git -C "$case_dir/origin.git" for-each-ref refs/heads/fix) && $(cat "$d/e9") == *'локальн'* ]]; then pass T9_local_only; else bad T9_local_only "err=$(cat "$d/e9") remote=$(git -C "$case_dir/origin.git" for-each-ref refs/heads/fix)"; fi
+
+echo "итог: PASS $ok, FAIL $fail"
+((fail == 0))
