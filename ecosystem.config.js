@@ -298,6 +298,42 @@ module.exports = {
       out_file: '/root/.pm2/logs/service-dashboard-out.log'
     },
     {
+      // owner 24.11: declared so the backup survives reboot (was running undeclared)
+      name: 'docker-backup',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/scripts/pm2/docker-backup.sh',
+      cwd: '/root/workspaces/tools/scripts/pm2',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '0 */6 * * *',
+      error_file: '/root/.pm2/logs/docker-backup-error.log',
+      out_file: '/root/.pm2/logs/docker-backup-out.log'
+    },
+    {
+      // owner 24.11: declared so the watchdog survives reboot (was running undeclared)
+      name: 'skill-search-health',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/scripts/schedulers/skill-search-health.sh',
+      cwd: '/root/workspaces/tools/scripts/schedulers',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '0 */6 * * *',
+      error_file: '/root/.pm2/logs/skill-search-health-error.log',
+      out_file: '/root/.pm2/logs/skill-search-health-out.log'
+    },
+    {
       name: 'forms-reserve-probe',
       time: true,
       merge_logs: true,
