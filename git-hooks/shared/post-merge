@@ -1,0 +1,5 @@
+#!/bin/sh
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$ROOT" ] || exit 0
+( setsid nice -n 19 /root/workspaces/tools/bin/code-memory-enable "$ROOT" >>/tmp/code-memory.log 2>&1 & ) # code-memory-hook
+exit 0

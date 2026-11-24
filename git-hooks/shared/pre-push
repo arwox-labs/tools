@@ -1,0 +1,39 @@
+#!/bin/sh
+# pre-push: branch guards (main/master, delete, non-fast-forward) + gitleaks secret scan
+Z=0000000000000000000000000000000000000000
+guard=on
+case "$2" in /tmp/*|file:///tmp/*) guard=off ;; esac
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$guard" = on ]; then
+    case "$remote_ref" in
+      refs/heads/*)
+        b=${remote_ref#refs/heads/}
+        if [ "$local_sha" = "$Z" ]; then
+          t=$(printf %s "$b" | tr / -)
+          ok=
+          for tsha in $(git ls-remote "$2" "refs/tags/archive/$t-*" 2>/dev/null | cut -f1); do
+            [ "$tsha" = "$remote_sha" ] && ok=1
+          done
+          [ -n "$ok" ] || { echo "pre-push: delete of $b refused: no archive tag; use tools/bin/safe-delete branch <repo> $b" >&2; exit 1; }
+        elif [ "$b" = main ] || [ "$b" = master ]; then
+          echo "pre-push: direct push to $b refused; push a topic branch and open a PR" >&2
+          exit 1
+        elif [ "$remote_sha" != "$Z" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+          echo "pre-push: non-fast-forward update of $b refused" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  fi
+  if [ "$local_sha" = "$Z" ]; then exit 0; fi
+  if [ "$remote_sha" = "$Z" ]; then
+    range="$local_sha --not --remotes"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+   cd "$(git rev-parse --show-toplevel)" || exit 1
+  if ! /root/.local/bin/gitleaks git --no-banner --redact --log-opts="$range"; then
+    echo 'BLOCKED: gitleaks нашёл секрет в отправляемых коммитах ('$range')' >&2
+    exit 1
+  fi
+done
