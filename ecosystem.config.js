@@ -1326,11 +1326,13 @@ module.exports = {
       // kint-b24-demo — демо КИНТ↔Б24 (список заявок, карточка, PDF счёта), basic-auth fail-closed.
       // Владелец 24.11.2026: перенести голый php -S (pid 3455198) под pm2, чтобы воскресал после ребута.
       // Секреты не в коде: DEMO_AUTH_* загружаются из secrets/projects/kint-b24/demo.env (CONFIGURATION.md:14).
+      // Роутер demo/router.php ставит Basic-Auth-гейт на весь docroot, включая статику
+      // (план: kint-b24/docs/reviews/2026-11-25-kint-b244-domain-architecture.md).
       name: 'kint-b24-demo',
       time: true,
       merge_logs: true,
       script: '/usr/bin/php',
-      args: ['-S', '0.0.0.0:8080', '-t', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo'],
+      args: ['-S', '0.0.0.0:8080', '-t', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo/router.php'],
       cwd: '/root/workspaces/projects/clients/sanatory-avto/kint-b24',
       interpreter: 'none',
       exec_mode: 'fork_mode',
