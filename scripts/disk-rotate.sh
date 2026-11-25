@@ -69,6 +69,8 @@ TOP5_NAMES=(workspaces docker backups local tmp)
 DENY_LIST=(
   '/root/backups'
   '/root/backups/**'
+  '/root/.nvm'
+  '/root/.nvm/**'
   '/root/workspaces/secrets'
   '/root/workspaces/secrets/**'
   '/root/workspaces/projects'
@@ -1419,7 +1421,7 @@ elif [ "$MODE" != report ]; then
     cleanup_cache
     cleanup_snap
     cleanup_vscode
-    cleanup_node
+    : cleanup_node  # dcfg-incident 2026-11-25: отключено — удалило рабочий node v24.22.1 (алиас и ps-защита не держат, см. lines 922-941)
     cleanup_sandbox
     cleanup_migration_dups
     projects_gate
