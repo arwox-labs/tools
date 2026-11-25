@@ -1332,7 +1332,9 @@ module.exports = {
       time: true,
       merge_logs: true,
       script: '/usr/bin/php',
-      args: ['-S', '0.0.0.0:8080', '-t', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo/router.php'],
+      // Слушаем только docker0 (172.17.0.1): NPM-мост kint-upstream ходит сюда через
+      // host.docker.internal, а внешний интерфейс порт 8080 больше не принимает.
+      args: ['-S', '172.17.0.1:8080', '-t', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo', '/root/workspaces/projects/clients/sanatory-avto/kint-b24/demo/router.php'],
       cwd: '/root/workspaces/projects/clients/sanatory-avto/kint-b24',
       interpreter: 'none',
       exec_mode: 'fork_mode',
