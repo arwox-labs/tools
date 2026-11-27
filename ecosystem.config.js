@@ -9,7 +9,16 @@ function loadEnvFile(filePath) {
       line = line.trim();
       if (line && !line.startsWith('#') && line.includes('=')) {
         const idx = line.indexOf('=');
-        env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+        let val = line.slice(idx + 1).trim();
+        // Mirror Config::stripQuotes: a quoted .env value must reach the process
+        // unquoted, otherwise it overrides the file value and breaks URL checks.
+        if (val.length >= 2) {
+          const q = val[0];
+          if ((q === '"' || q === "'") && val[val.length - 1] === q) {
+            val = val.slice(1, -1);
+          }
+        }
+        env[line.slice(0, idx).trim()] = val;
       }
     });
   } catch (e) {
@@ -678,53 +687,6 @@ module.exports = {
       error_file: '/root/.pm2/logs/kp-landing-serve-error.log',
       out_file: '/root/.pm2/logs/kp-landing-serve-out.log'
     },
-    // spec:077 тест 1 «веб-чат» — демо владельцу, живёт до приёмки трёх тестов, убирается в T027
-    {
-      name: 'ui-chat-staging',
-      time: true,
-      merge_logs: true,
-      script: '/usr/bin/python3',
-      args: [
-        '-m',
-        'http.server',
-        '20101',
-        '--bind',
-        '0.0.0.0',
-        '--directory',
-        '/root/workspaces/projects/claude-test-apps/chat/dist'
-      ],
-      cwd: '/root',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/ui-chat-staging-error.log',
-      out_file: '/root/.pm2/logs/ui-chat-staging-out.log'
-    },
-    // spec:077 автоиндексация активного проекта (слово владельца 27.09) — живёт, пока песочница активна, убирается вместе с ui-chat-staging в T027
-    {
-      name: 'repowise-watch-test-ui-chat',
-      time: true,
-      merge_logs: true,
-      script: '/root/.local/bin/repowise',
-      args: [
-        'watch',
-        '/root/workspaces/projects/claude-test-apps/chat',
-        '--no-workspace',
-        '--index-only'
-      ],
-      cwd: '/root/workspaces/projects/claude-test-apps/chat',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/repowise-watch-test-ui-chat-error.log',
-      out_file: '/root/.pm2/logs/repowise-watch-test-ui-chat-out.log'
-    },
     {
       name: 'kpd-proxy',
       time: true,
@@ -1343,9 +1305,41 @@ module.exports = {
       min_uptime: 1000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
-      env: kintDemoEnv,
+      // php -S is single-threaded by default; one slow KINT call froze the whole demo.
+      // Kept low (2) on purpose: the KINT host started refusing our IP after a burst,
+      // so concurrent sessions stay minimal until the vendor confirms its limits.
+      // SYNC_FROM_DATE is a hard floor for the sync window (nothing older is exported).
+      env: { ...kintDemoEnv, PHP_CLI_SERVER_WORKERS: '2', SYNC_FROM_DATE: '2026-11-26' },
       error_file: '/root/.pm2/logs/kint-b24-demo-error.log',
       out_file: '/root/.pm2/logs/kint-b24-demo-out.log'
+    },
+    {
+      // kint-b24-sync — фоновый цикл синхронизации КИНТ→Б24 с активными часами.
+      // Интервал и окно активности — из env (SYNC_POLL_SEC, SYNC_ACTIVE_FROM/TO, SYNC_TZ).
+      // SYNC_FROM_DATE=2026-11-26 — жёсткая нижняя граница: раньше этой даты ничего не выгружается.
+      name: 'kint-b24-sync',
+      time: true,
+      merge_logs: true,
+      script: '/usr/bin/php',
+      args: ['/root/workspaces/projects/clients/sanatory-avto/kint-b24/bin/sync-loop.php'],
+      cwd: '/root/workspaces/projects/clients/sanatory-avto/kint-b24',
+      interpreter: 'none',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: true,
+      min_uptime: 2000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 2000,
+      env: {
+        ...kintDemoEnv,
+        SYNC_FROM_DATE: '2026-11-26',
+        SYNC_POLL_SEC: '5',
+        SYNC_ACTIVE_FROM: '07:00',
+        SYNC_ACTIVE_TO: '22:00',
+        SYNC_TZ: 'Europe/Moscow'
+      },
+      error_file: '/root/.pm2/logs/kint-b24-sync-error.log',
+      out_file: '/root/.pm2/logs/kint-b24-sync-out.log'
     }
   ]
 };

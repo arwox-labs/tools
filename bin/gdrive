@@ -72,7 +72,11 @@ def call(tool: str, args: dict, sid: str) -> dict:
     res = rpc("tools/call", {"name": tool, "arguments": args}, sid)
     if "error" in res:
         sys.exit("MCP error: " + json.dumps(res["error"]))
-    content = res.get("result", {}).get("content", [])
+    result = res.get("result", {})
+    if result.get("isError"):
+        detail = result.get("content", [{}])[0].get("text", "")
+        sys.exit("gdrive %s: ошибка сервера — %s" % (tool, detail))
+    content = result.get("content", [])
     out = []
     for c in content:
         if c.get("type") == "text":
@@ -108,10 +112,10 @@ def main() -> None:
         res = call("download_file_content", {"fileId": sys.argv[2]}, sid)
         import base64
         meta = res if isinstance(res, dict) else (res[0] if res else {})
+        if not isinstance(meta, dict) or "content" not in meta:
+            sys.exit("download: %s" % (meta if not isinstance(meta, dict) else "в ответе нет content (возможно >10 MB — лимит коннектора)"))
         name = meta.get("title", sys.argv[2])
         b64 = meta.get("content", "")
-        if not b64:
-            sys.exit("download: в ответе нет поля content")
         path = os.path.join(outdir, name)
         with open(path, "wb") as fh:
             fh.write(base64.b64decode(b64))
