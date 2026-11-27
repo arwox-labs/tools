@@ -1,0 +1,5 @@
+1. **ПОДТВЕРЖДЕНО** — `ranCodex` ищет `/codex exec|codex-atom/` в сериализованном содержимом инструмента: [detect.js](/root/.config/opencode/plugins/codex-first/detect.js:25)–[26).
+2. **ПОДТВЕРЖДЕНО** — `sawFallback` принимает вывод инструмента, содержащий `FALLBACK:`: [detect.js](/root/.config/opencode/plugins/codex-first/detect.js:29)–[30).
+3. **ПОДТВЕРЖДЕНО** — `didEdits` проверяет только имена `edit`, `write`, `apply_patch`, `patch`: [detect.js](/root/.config/opencode/plugins/codex-first/detect.js:33)–[34).
+4. **ОПРОВЕРГНУТО** — после трёх замечаний прекращаются только повторные коррекции; блокировки нет: [index.js](/root/.config/opencode/plugins/codex-first/index.js:5), [index.js](/root/.config/opencode/plugins/codex-first/index.js:28)–[32).
+5. **ПОДТВЕРЖДЕНО** — события обрабатываются по отдельному `sessionID`, счётчик и prompt адресованы этой же сессии; подъёма коррекции в родительскую логику нет: [index.js](/root/.config/opencode/plugins/codex-first/index.js:15)–[16), [index.js](/root/.config/opencode/plugins/codex-first/index.js:25)–[32).

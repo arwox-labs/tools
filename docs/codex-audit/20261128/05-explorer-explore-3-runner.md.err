@@ -1,0 +1,154 @@
+Reading additional input from stdin...
+OpenAI Codex v0.171.0
+--------
+workdir: /root/workspaces/tools
+model: gpt-6-luna
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a21f15-66a0-70d1-b366-119063663894
+--------
+user
+Прочитай /root/workspaces/tools/bin/codex-role и ответь тремя строками, только факты:
+1) при каком пути каталога артефактов скрипт отказывает и по какому правилу;
+2) что содержит строка RUNNER (перечисли поля);
+3) какой timeout применяется к ролям с sandbox read-only.
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Failed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Failed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/bash -lc 'cat /root/workspaces/tools/bin/codex-role' in /root/workspaces/tools
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# codex-role — 12 ролей Codex конвейера (владелец 28.11).
+# Одна роль = один изолированный процесс `codex exec` + один артефакт NN-<role>.md.
+# Постоянное место артефактов: /root/workspaces/tools/docs/codex-audit/<date>/ (не /tmp).
+set -uo pipefail
+
+ELIGIBLE_ERR=29
+OUT_ROOT=/root/workspaces/tools/docs/codex-audit/$(date +%Y%m%d)
+
+usage() {
+    cat <<'TXT'
+usage: codex-role --list
+       codex-role <role> <atom-file> [--project DIR] [--out DIR]
+
+Роли (12): plan critic designer explorer analyst builder tester verifier
+           reviewer integrator reporter guard
+
+Артефакт: <out>/NN-<role>.md, на stdout — машинный отчёт строкой:
+  RUNNER role=… model=… sandbox=… rc=… bytes=… atom_sha=… out=…
+TXT
+}
+
+role_spec() {
+    case "$1" in
+        plan)       echo "gpt-6.2-astra high read-only 2" ;;
+        critic)     echo "gpt-6.2-astra high read-only 3" ;;
+        designer)   echo "gpt-6.2-astra high read-only 4" ;;
+        explorer)   echo "gpt-6-luna low read-only 5" ;;
+        analyst)    echo "gpt-6.2-astra high read-only 6" ;;
+        builder)    echo "gpt-6-luna medium workspace-write 7" ;;
+        tester)     echo "gpt-6-luna medium workspace-write 8" ;;
+        verifier)   echo "gpt-6-luna low read-only 9" ;;
+        reviewer)   echo "gpt-6.2-astra high read-only 10" ;;
+        integrator) echo "gpt-6-luna medium workspace-write 11" ;;
+        reporter)   echo "gpt-6-luna low read-only 12" ;;
+        guard)      echo "gpt-6.2-astra high read-only 13" ;;
+        *) return 1 ;;
+    esac
+}
+
+list_roles() {
+    printf '%-11s %-14s %-7s %-16s %s\n' ROLE MODEL EFFORT SANDBOX ORDER
+    for r in plan critic designer explorer analyst builder tester verifier reviewer integrator reporter guard; do
+        read -r m e s o <<<"$(role_spec "$r")"
+        printf '%-11s %-14s %-7s %-16s %s\n' "$r" "$m" "$e" "$s" "$o"
+    done
+}
+
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
+if [[ "$1" == "--list" ]]; then list_roles; exit 0; fi
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then usage; exit 0; fi
+
+role=$1; shift
+spec=$(role_spec "$role") || { echo "codex-role: неизвестная роль '$role'" >&2; usage >&2; exit 2; }
+read -r model effort sandbox order <<<"$spec"
+
+[[ $# -ge 1 ]] || { echo "codex-role: нужен atom-file" >&2; exit 2; }
+atom=$1; shift
+[[ -r "$atom" ]] || { echo "codex-role: нет файла '$atom'" >&2; exit 2; }
+
+project=$PWD
+out=$OUT_ROOT
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --project) project=${2:?}; shift 2 ;;
+        --out)     out=${2:?}; shift 2 ;;
+        *) echo "codex-role: лишний аргумент '$1'" >&2; exit 2 ;;
+    esac
+done
+
+# Постоянное место артефактов: /tmp запрещён владельцем 28.11.
+case "$out" in
+    /tmp/*) echo "codex-role: отказ по правилу владельца — артефакты не в /tmp, а в tools/docs" >&2; exit 2 ;;
+esac
+
+command -v codex >/dev/null || { echo "codex-role: codex не найден в PATH" >&2; exit 29; }
+mkdir -p "$out" || exit 2
+[[ -d "$project" ]] || { echo "codex-role: нет каталога проекта '$project'" >&2; exit 2; }
+
+artifact=$out/$(printf '%02d' "$order")-$role-$(basename "${atom%.md}").md
+atom_sha=$(sha256sum "$atom" | awk '{print $1}')
+timeout_s=$([[ "$sandbox" == "read-only" ]] && echo 300 || echo 900)
+
+prompt=$(cat "$atom")
+timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" -s "$sandbox" \
+    --skip-git-repo-check -C "$project" "$prompt" >"$artifact" 2>"$artifact.err"
+rc=$?
+
+bytes=$(wc -c <"$artifact" 2>/dev/null || echo 0)
+if [[ $rc -ne 0 ]]; then
+    printf 'RUNNER role=%s model=%s sandbox=%s rc=%s bytes=%s atom_sha=%s out=%s err=%s\n' \
+        "$role" "$model" "$sandbox" "$rc" "$bytes" "$atom_sha" "$artifact" "$artifact.err"
+    head -3 "$artifact.err" >&2
+    exit "$rc"
+fi
+if [[ ! -s "$artifact" ]]; then
+    printf 'RUNNER role=%s model=%s sandbox=%s rc=%s bytes=0 atom_sha=%s out=%s empty=1\n' \
+        "$role" "$model" "$sandbox" 1 "$atom_sha" "$artifact"
+    exit 1
+fi
+printf 'RUNNER role=%s model=%s sandbox=%s rc=0 bytes=%s atom_sha=%s out=%s\n' \
+    "$role" "$model" "$sandbox" "$bytes" "$atom_sha" "$artifact"
+codex
+1) `/tmp/*` — отказ по правилу владельца: артефакты хранятся в `tools/docs`, не в `/tmp`.
+2) `RUNNER`: `role`, `model`, `sandbox`, `rc`, `bytes`, `atom_sha`, `out`; при ошибке — ещё `err`, при пустом артефакте — `empty`.
+3) Ролям с `sandbox=read-only` назначен timeout 300 секунд.
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+tokens used
+34,165
