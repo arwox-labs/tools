@@ -23,18 +23,18 @@ usage() {
 
 [[ $# -eq 0 ]] && usage
 
+INPUT=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --output) OUTPUT_PATH="$2"; shift 2 ;;
         --) shift; break ;;
         -*) echo "ERROR: Unknown option: $1" >&2; usage ;;
-        *) break ;;
+        *) [[ -z "$INPUT" ]] && INPUT="$1" || { echo "ERROR: Unexpected argument: $1" >&2; usage; }; shift ;;
     esac
 done
 
-[[ $# -eq 0 ]] && usage
-INPUT="$1"
+[[ -z "$INPUT" ]] && usage
 FILENAME=""
 FETCH_VIA="mc"  # mc (local MinIO) or curl (remote)
 
@@ -56,9 +56,17 @@ elif [[ "$INPUT" == https://b244.ru/* ]] || [[ "$INPUT" == http://b244.ru/* ]]; 
         FILENAME="${REDIRECT_URL#https://io.b244.ru/files/}"
         FETCH_VIA="mc"
     else
-        # Fallback: download directly via curl
-        FETCH_VIA="curl"
-        FETCH_URL="$INPUT"
+        # Non-MinIO short-link target (e.g. Google Drive) — delegate to
+        # agent-download.sh instead of refusing. # ponytail: whole-URL delegation;
+        # agent-download.sh splits b244/gdrive internally.
+        echo "BLOCKED: protected download source detected. Use: bash /root/workspaces/tools/acc1-scripts/agent-download.sh --output-dir <dir> '<url-or-id>'" >&2
+        if [[ -n "$OUTPUT_PATH" ]]; then
+            exec bash /root/workspaces/tools/acc1-scripts/agent-download.sh --output "$OUTPUT_PATH" "$INPUT"
+        elif [[ -n "$OUTPUT_DIR" ]]; then
+            exec bash /root/workspaces/tools/acc1-scripts/agent-download.sh --output-dir "$OUTPUT_DIR" "$INPUT"
+        else
+            exec bash /root/workspaces/tools/acc1-scripts/agent-download.sh "$INPUT"
+        fi
     fi
 
 else
