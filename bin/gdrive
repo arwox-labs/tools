@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""gdrive — единый мост к Google Drive через claude.ai коннектор для всех агентов.
+
+Доступ к Диску идёт не файлом-ключом, а OAuth-коннектором аккаунта claude.ai
+(mcp-proxy.anthropic.com). Токен берётся из /root/.claude/.credentials.json и
+обновляется claude CLI. Любой агент (codex, opencode, gemini) вызывает этот
+скрипт из shell.
+
+Команды:
+  gdrive list [N]                 последние файлы
+  gdrive search "<query>" [N]     поиск по имени
+  gdrive meta <fileId>            метаданные файла
+  gdrive download <fileId> [dir]  скачать содержимое
+  gdrive trash <fileId>           в корзину (НЕ необратимо)
+  gdrive call <tool> '<json>'     прямой вызов любого MCP-инструмента
+
+Значения токена не печатаются.
+"""
+import json, os, sys, uuid, urllib.request, urllib.error
+
+CREDS = "/root/.claude/.credentials.json"
+PROXY = "https://mcp-proxy.anthropic.com/v1/mcp/mcpsrv_01PrBskKXVhN4Gsgqk1XXZw3"
+
+
+def token() -> str:
+    with open(CREDS) as f:
+        data = json.load(f)
+    oauth = data["claudeAiOauth"]
+    # авто-обновление: если токен истекает в ближайшие 10 минут — просим claude CLI обновить
+    import time
+    if oauth.get("expiresAt") and oauth["expiresAt"] / 1000 - time.time() < 600:
+        try:
+            import subprocess
+            subprocess.run(["/root/.local/bin/claude", "mcp", "list"],
+                           capture_output=True, timeout=60)
+            with open(CREDS) as f:
+                oauth = json.load(f)["claudeAiOauth"]
+        except Exception:
+            pass
+    return oauth["accessToken"]
+
+
+def rpc(method: str, params: dict, sid: str) -> dict:
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(
+        PROXY, data=body, method="POST",
+        headers={
+            "Authorization": "Bearer " + token(),
+            "X-Mcp-Client-Session-Id": sid,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "curl/8.5.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            raw = r.read().decode()
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:400]
+        sys.exit("gdrive: HTTP %s — %s\n(если токен истёк: запустите `claude mcp list` для обновления .credentials.json)" % (e.code, detail))
+    # ответ может быть SSE: строки "event: message" + "data: {...}"
+    payload = raw
+    if raw.startswith("event:") or "data:" in raw:
+        for line in raw.splitlines():
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+                break
+    return json.loads(payload)
+
+
+def call(tool: str, args: dict, sid: str) -> dict:
+    res = rpc("tools/call", {"name": tool, "arguments": args}, sid)
+    if "error" in res:
+        sys.exit("MCP error: " + json.dumps(res["error"]))
+    content = res.get("result", {}).get("content", [])
+    out = []
+    for c in content:
+        if c.get("type") == "text":
+            try:
+                out.append(json.loads(c["text"]))
+            except Exception:
+                out.append(c["text"])
+        else:
+            out.append(c)
+    return out[0] if len(out) == 1 else out
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return
+    sid = str(uuid.uuid4())
+    cmd = sys.argv[1]
+    if cmd == "list":
+        n = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+        print(json.dumps(call("list_recent_files", {"pageSize": n}, sid), ensure_ascii=False, indent=2))
+    elif cmd == "search":
+        n = int(sys.argv[3]) if len(sys.argv) > 3 else 10
+        q = sys.argv[2]
+        if " содержит " not in q and " contains " not in q and "=" not in q:
+            q = 'name contains "%s"' % q.replace('"', '')
+        print(json.dumps(call("search_files", {"query": q, "pageSize": n}, sid), ensure_ascii=False, indent=2))
+    elif cmd == "meta":
+        print(json.dumps(call("get_file_metadata", {"fileId": sys.argv[2]}, sid), ensure_ascii=False, indent=2))
+    elif cmd == "download":
+        outdir = sys.argv[3] if len(sys.argv) > 3 else "/tmp/gdrive"
+        os.makedirs(outdir, exist_ok=True)
+        res = call("download_file_content", {"fileId": sys.argv[2]}, sid)
+        import base64
+        meta = res if isinstance(res, dict) else (res[0] if res else {})
+        name = meta.get("title", sys.argv[2])
+        b64 = meta.get("content", "")
+        if not b64:
+            sys.exit("download: в ответе нет поля content")
+        path = os.path.join(outdir, name)
+        with open(path, "wb") as fh:
+            fh.write(base64.b64decode(b64))
+        print(json.dumps({"saved": path, "bytes": os.path.getsize(path)}, ensure_ascii=False))
+    elif cmd == "trash":
+        print(json.dumps(call("trash_file", {"fileId": sys.argv[2]}, sid), ensure_ascii=False, indent=2))
+    elif cmd == "call":
+        print(json.dumps(call(sys.argv[2], json.loads(sys.argv[3]), sid), ensure_ascii=False, indent=2))
+    else:
+        sys.exit("unknown command: " + cmd)
+
+
+if __name__ == "__main__":
+    main()
