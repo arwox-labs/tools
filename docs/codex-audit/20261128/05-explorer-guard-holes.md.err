@@ -1,0 +1,152 @@
+Reading additional input from stdin...
+OpenAI Codex v0.171.0
+--------
+workdir: /root/workspaces/tools
+model: gpt-6-luna
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a21f15-a2b5-76f2-ba25-cab73111d51a
+--------
+user
+Проверь пять утверждений о гейте Codex и по каждому дай вердикт ПОДТВЕРЖДЕНО/ОПРОВЕРГНУТО с цитатой файла и строкой.
+
+1. /root/.config/opencode/plugins/codex-first/detect.js — функция ranCodex считает запуском codex любое упоминание строки "codex exec" в тексте инструмента.
+2. detect.js — sawFallback принимает любой вывод со строкой "FALLBACK:" как законный фолбэк.
+3. detect.js — didEdits ловит только инструменты edit/write/apply_patch/patch, правки через shell не видит.
+4. /root/.config/opencode/plugins/codex-first/index.js — после MAX_CORRECTIONS замечаний проверка прекращается, блокировки нет.
+5. index.js — правка, сделанная дочерней сессией через инструмент subagent, не поднимает коррекцию в родительской сессии.
+
+Формат ответа: строка на утверждение, без вступлений. Файлы только читать.
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Failed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Failed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/bash -lc 'nl -ba /root/.config/opencode/plugins/codex-first/detect.js && nl -ba /root/.config/opencode/plugins/codex-first/index.js' in /root/workspaces/tools
+ succeeded in 0ms:
+     1	function search(value) {
+     2	  try {
+     3	    return JSON.stringify(value)
+     4	  } catch {
+     5	    return ""
+     6	  }
+     7	}
+     8	
+     9	function parts(messages) {
+    10	  return (messages ?? []).map((message) => message?.parts ?? []).flat()
+    11	}
+    12	
+    13	function isTool(part) {
+    14	  return part?.type === "tool" || part?.type === "tool-invocation" || part?.type === "tool_call"
+    15	}
+    16	
+    17	function toolText(part) {
+    18	  return [part?.name, part?.tool, part?.state?.input, part?.state?.output, part?.input, part?.args, part?.output].map(search).join(" ")
+    19	}
+    20	
+    21	function outputText(part) {
+    22	  return search([part?.state?.output, part?.state?.metadata, part?.parts, part?.text])
+    23	}
+    24	
+    25	export function ranCodex(messages) {
+    26	  return parts(messages).some((part) => isTool(part) && /codex exec|codex-atom/.test(toolText(part)))
+    27	}
+    28	
+    29	export function sawFallback(messages) {
+    30	  return parts(messages).some((part) => isTool(part) && /FALLBACK:/.test(outputText(part)))
+    31	}
+    32	
+    33	export function didEdits(messages) {
+    34	  return parts(messages).some((part) => isTool(part) && ["edit", "write", "apply_patch", "patch"].includes(part?.name ?? part?.tool))
+    35	}
+    36	
+    37	export function shouldCorrect(messages) {
+    38	  return didEdits(messages) && !ranCodex(messages) && !sawFallback(messages)
+    39	}
+     1	import { shouldCorrect } from "./detect.js"
+     2	
+     3	export const LAW = "CODEX-FIRST: implementation atoms go to the `codex-atom` script through the shell tool. If codex fails (rc=29, FALLBACK, or a recorded verbatim error), fall back to an OpenCode worker on Alibaba. Never skip codex silently."
+     4	export const CORRECTION = "You edited files in this turn without routing the implementation atom to codex. Stop and redo it the CODEX-FIRST way: write the atom to a file and run `codex-atom <atom-file> --project <repo-dir>` through the shell tool with timeout, then show its verbatim output. If codex fails (rc=29 or FALLBACK), say so and continue with an OpenCode worker; never skip codex silently."
+     5	export const MAX_CORRECTIONS = 3
+     6	
+     7	export async function setup(ctx) {
+     8	  await ctx.session.hook("context", (event) => {
+     9	    event.system.push({ type: "text", text: LAW })
+    10	  })
+    11	
+    12	  const controller = new AbortController()
+    13	  void (async () => {
+    14	    try {
+    15	      for await (const ev of ctx.event.subscribe({ types: ["session.idle", "session.message"], signal: controller.signal })) {
+    16	        const sessionID = ev.sessionID ?? ev.properties?.sessionID ?? ev.properties?.info?.id
+    17	        if (!sessionID) continue
+    18	
+    19	        if (ev.type === "session.message") {
+    20	          const role = ev.properties?.info?.role ?? ev.properties?.role
+    21	          if (role === "user") ctx.storage.set("codex-first/" + sessionID, 0)
+    22	          continue
+    23	        }
+    24	
+    25	        const messages = await ctx.session.context({ sessionID })
+    26	        if (!shouldCorrect(messages)) continue
+    27	
+    28	        const key = "codex-first/" + sessionID
+    29	        const count = Number(ctx.storage.get(key)) || 0
+    30	        if (count >= MAX_CORRECTIONS) continue
+    31	        ctx.storage.set(key, count + 1)
+    32	        await ctx.session.prompt({ sessionID, text: CORRECTION })
+    33	      }
+    34	    } catch (error) {
+    35	      if (error?.name !== "AbortError") throw error
+    36	    }
+    37	  })()
+    38	
+    39	  return () => controller.abort()
+    40	}
+    41	
+    42	let Plugin
+    43	try { ({ Plugin } = await import("@opencode/plugin")) } catch {}
+    44	export default (Plugin ? Plugin.define({ id: "codex-first", setup }) : { id: "codex-first", setup })
+
+codex
+1. **ПОДТВЕРЖДЕНО** — `ranCodex` ищет `codex exec` в сериализованном тексте любого tool part: [detect.js](/root/.config/opencode/plugins/codex-first/detect.js:25)–[26).
+2. **ПОДТВЕРЖДЕНО** — `sawFallback` принимает любой tool output, содержащий `FALLBACK:`; проверка формата или причины отсутствует: [detect.js](/root/.config/opencode/plugins/codex-first/detect.js:29)–[30).
+3. **ПОДТВЕРЖДЕНО** — `didEdits` проверяет только имена `edit`, `write`, `apply_patch`, `patch`; shell-инструмент не проверяется: [detect.js](/root/.config/opencode/plugins/codex-first/detect.js:33)–[34).
+4. **ОПРОВЕРГНУТО** — после трёх замечаний новые коррекции пропускаются, блокировки нет: [index.js](/root/.config/opencode/plugins/codex-first/index.js:5), [index.js](/root/.config/opencode/plugins/codex-first/index.js:28)–[32).
+5. **ПОДТВЕРЖДЕНО** — событие `session.idle` проверяет контекст только `sessionID` события; отдельной обработки дочерней сессии или передачи коррекции родителю нет: [index.js](/root/.config/opencode/plugins/codex-first/index.js:15)–[16), [index.js](/root/.config/opencode/plugins/codex-first/index.js:25)–[32).
+hook: Stop
+hook: Stop
+2026-11-27T22:17:51.461769Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://mcp.deepwiki.com/mcp)")))
+2026-11-27T22:17:51.461771Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://mcp.tavily.com/mcp)")))
+2026-11-27T22:17:51.468354Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://mcp.context7.com/mcp)")))
+hook: Stop Blocked
+hook: Stop Completed
+codex
+Гейт ревью указывает на неточность в `docs/codex-audit/20261128/05-explorer-explore-2-swarm.md:2`: утверждение о полной остановке запусков после `rc=29` неверно. Исправь вывод: квота определяется асинхронно, поэтому может стартовать ещё один процесс. Исправление `codex-swarm` — отдельная задача.
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+tokens used
+35,181

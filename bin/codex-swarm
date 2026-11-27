@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# codex-swarm — держит N (максимум 5) процессов Codex в полёте, пока не кончатся атомы или квота.
+# Владелец 28.11: потолок 5 процессов на лида (AGENTS.md, PROCESS DISCIPLINE п.2), поэтому
+# «200000 штук» не запускаются: очередь из 200000 процессов = отказ машины, а не загрузка квоты.
+# Здесь квота выбирается плотно и безопасно: 5 в полёте постоянно, до rc=29 (квота кончилась).
+set -uo pipefail
+
+MAX_PARALLEL=5
+role=explorer
+project=$PWD
+out=""
+dry=0
+
+usage() {
+    cat <<'TXT'
+usage: codex-swarm <atoms-dir> [--role ROLE] [--project DIR] [--out DIR] [--parallel N] [--dry-run]
+
+Атомы: *.md в каталоге, каждый файл = один атом. Полёт: не более 5 процессов (жёсткий потолок).
+Остановка: rc=29 у любой роли (квота Codex исчерпана) — оставшаяся очередь не запускается.
+Итог: строка SWARM total=… ok=… failed=… stopped=quota|done.
+TXT
+}
+
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
+[[ "$1" == "--help" || "$1" == "-h" ]] && { usage; exit 0; }
+atoms=$1; shift
+[[ -d "$atoms" ]] || { echo "codex-swarm: нет каталога '$atoms'" >&2; exit 2; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --role)     role=${2:?}; shift 2 ;;
+        --project)  project=${2:?}; shift 2 ;;
+        --out)      out=${2:?}; shift 2 ;;
+        --parallel) MAX_PARALLEL=${2:?}; shift 2 ;;
+        --dry-run)  dry=1; shift ;;
+        *) echo "codex-swarm: лишний аргумент '$1'" >&2; exit 2 ;;
+    esac
+done
+
+if (( MAX_PARALLEL > 5 )); then
+    echo "codex-swarm: отказ по правилу AGENTS.md (PROCESS DISCIPLINE п.2) — не более 5 процессов на лида, запрошено $MAX_PARALLEL" >&2
+    exit 2
+fi
+(( MAX_PARALLEL >= 1 )) || { echo "codex-swarm: --parallel >= 1" >&2; exit 2; }
+
+here=$(cd "$(dirname "$0")" && pwd)
+mapfile -t files < <(find "$atoms" -maxdepth 1 -type f -name '*.md' | sort)
+total=${#files[@]}
+(( total > 0 )) || { echo "codex-swarm: в '$atoms' нет *.md" >&2; exit 2; }
+
+if (( dry )); then
+    printf 'SWARM dry-run total=%s role=%s parallel=%s project=%s\n' "$total" "$role" "$MAX_PARALLEL" "$project"
+    printf '%s\n' "${files[@]}"
+    exit 0
+fi
+
+logdir=${out:-/root/workspaces/tools/docs/codex-audit/$(date +%Y%m%d)}
+mkdir -p "$logdir" || exit 2
+rolargs=("--project" "$project")
+[[ -n "$out" ]] && rolargs+=("--out" "$out")
+resfile=$logdir/swarm-results.txt
+: >"$resfile"
+
+ok=0; failed=0; stopped=done; inflight=0
+for f in "${files[@]}"; do
+    if (( inflight >= MAX_PARALLEL )); then wait -n; inflight=$((inflight-1)); fi
+    ( "$here/codex-role" "$role" "$f" "${rolargs[@]}" >>"$logdir/swarm.log" 2>&1; echo "RESULT $(basename "$f") $?" >>"$resfile" ) &
+    inflight=$((inflight+1))
+    # квота кончилась — оставшуюся очередь не запускаем
+    if grep -q '^RESULT .* 29$' "$resfile" 2>/dev/null; then stopped=quota; break; fi
+done
+wait
+
+while read -r tag name rc; do
+    [[ "$tag" == "RESULT" ]] || continue
+    if [[ "$rc" == "0" ]]; then ok=$((ok+1)); else failed=$((failed+1)); fi
+    [[ "$rc" == "29" ]] && stopped=quota
+done <"$resfile"
+
+launched=$((ok+failed))
+printf 'SWARM total=%s launched=%s ok=%s failed=%s stopped=%s log=%s\n' "$total" "$launched" "$ok" "$failed" "$stopped" "$logdir/swarm.log"
+[[ "$stopped" == "quota" ]] && exit 29
+(( failed > 0 )) && exit 1
+exit 0

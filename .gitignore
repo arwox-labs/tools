@@ -46,3 +46,4 @@ sdk-agent/runs.jsonl
 /sdk-agent/engine-home/
 /sdk-agent/runs.jsonl*
 /scripts/.compound-engineering/
+docs/codex-audit/**/*.err
