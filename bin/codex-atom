@@ -41,7 +41,9 @@ while (($#)); do
 done
 
 [[ -f $atom && -s $atom ]] || { fail "atom-file missing or empty: $atom"; exit 2; }
+atom=$(cd -- "$(dirname -- "$atom")" && pwd -P)/$(basename -- "$atom")
 project=$(cd -- "$project" 2>/dev/null && pwd -P) || { fail "project directory unavailable"; exit 2; }
+
 secrets=/root/workspaces/secrets
 case $project in
     "$secrets"|"$secrets"/*) fail 'project cannot be inside secrets'; exit 2 ;;
@@ -50,16 +52,37 @@ case $secrets in
     "$project"/*) fail 'project cannot make secrets writable'; exit 2 ;;
 esac
 
+# Beads workspace root: atoms live in the workspace tracker, not in a subproject repo.
+WS=/root/workspaces/projects
+[[ -d $WS/.beads ]] || WS=/root/workspaces/tools
+
 sandbox=workspace-write
 ((read_only)) && sandbox=read-only
-cmd=(timeout 900 codex exec -m "$model" -c 'model_reasoning_effort="medium"' -s "$sandbox" --skip-git-repo-check --trust -C "$project" -c 'sandbox_workspace_write.network_access=true' -c 'approval_policy="never"')
+
+# F2: always run Codex with cwd = workspace so `bd`/Beads resolve the workspace tracker.
+# The target repo is granted separately via --add-dir (read) and writable_roots (write).
+cmd=(timeout 900 codex exec -m "$model" -c 'model_reasoning_effort="medium"' -s "$sandbox" --skip-git-repo-check --trust -C "$WS" -c 'sandbox_workspace_write.network_access=true' -c 'approval_policy="never"')
+if [[ $project != "$WS" ]]; then
+    cmd+=(--add-dir "$project")
+fi
+
 if ((!read_only)); then
-    toml_path=${project//\\/\\\\}
-    toml_path=${toml_path//\"/\\\"}
-    toml_path=${toml_path//$'\n'/\\n}
-    toml_path=${toml_path//$'\r'/\\r}
-    toml_path=${toml_path//$'\t'/\\t}
-    cmd+=(-c "sandbox_workspace_write.writable_roots=[\"$toml_path\",\"/tmp/opencode\"]")
+    roots=("$project" /tmp/opencode "$WS/.beads" "$WS/.agent-work" /root/workspaces/tools/.beads /root/workspaces/tools/state /root/.local/share/opencode/log)
+    toml=""
+    seen=":"
+    for r in "${roots[@]}"; do
+        [[ -d $r ]] || continue
+        case $seen in *":$r:"*) continue ;; esac
+        seen="$seen$r:"
+        case $r in "$secrets"|"$secrets"/*) continue ;; esac
+        esc=${r//\\/\\\\}
+        esc=${esc//\"/\\\"}
+        esc=${esc//$'\n'/\\n}
+        esc=${esc//$'\r'/\\r}
+        esc=${esc//$'\t'/\\t}
+        toml+="${toml:+, }\"$esc\""
+    done
+    cmd+=(-c "sandbox_workspace_write.writable_roots=[$toml]")
 fi
 cmd+=(-)
 
@@ -81,7 +104,12 @@ printf 'LOG: %s\n' "$log" >&2
 pipe_status=("${PIPESTATUS[@]}")
 rc=${pipe_status[0]}
 tee_rc=${pipe_status[1]}
-if ((rc != 0)) || grep -Eiq 'quota|trusted directory|read-only file system' "$log"; then
+
+# F3: FALLBACK only on a real failure. rc!=0 is the primary signal; a few explicit
+# fatal strings (quota / unsupported model / untrusted dir) also mean "could not act".
+# Benign gate warnings like "workspace gate acquisition failed, continuing ungated" and
+# "Dolt server unreachable ... continuing ungated" are NOT fatal — Codex still edits.
+if ((rc != 0)) || grep -Eq 'Allocated quota exceeded|quota exceeded|model is not supported|not inside a trusted directory' "$log"; then
     printf 'FALLBACK: codex failed rc=%s\n' "$rc" >&2
     exit 29
 fi
