@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kint-cert-retry — штатный выпуск сертификата для kint.b244.ru через API NPM.
-# Запускается по расписанию: пробует выпуск, при успехе привязывает сертификат к хосту 41
-# и перезагружает nginx. Значения секретов не печатаются.
+# Порядок: снять Force SSL (проверка LE идёт по http) -> выпуск через NPM -> привязать сертификат -> вернуть Force SSL.
+# Значения секретов не печатаются. Запускается по расписанию.
 set -uo pipefail
 
 API=/root/workspaces/tools/bin/npm-api
@@ -11,7 +11,13 @@ LOG=/var/log/kint-cert-retry.log
 
 log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG"; }
 
+# 1. Force SSL снимается на время выпуска: иначе проверка редиректится на https.
+"$API" ssl-force "$HOST_ID" 0 >/dev/null 2>&1
+sleep 2
+
+# 2. Выпуск выполняет сам NPM.
 out=$("$API" issue-le "$DOMAIN" 2>&1)
+
 if printf '%s' "$out" | grep -q '"id":[0-9]'; then
     cid=$(printf '%s' "$out" | sed -n 's/.*"id":\([0-9]\+\).*/\1/p' | head -1)
     log "ISSUED cert_id=$cid"
@@ -23,5 +29,7 @@ if printf '%s' "$out" | grep -q '"id":[0-9]'; then
     exit 0
 fi
 
-log "RETRY_FAILED: $(printf '%s' "$out" | head -c 200)"
+# 3. Не удалось — вернуть Force SSL и записать точную причину.
+"$API" ssl-force "$HOST_ID" 1 >/dev/null 2>&1
+log "RETRY_FAILED: $(printf '%s' "$out" | head -c 220)"
 exit 1

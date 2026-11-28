@@ -64,6 +64,19 @@ print(json.dumps(out))
 ' "$cert")
         api PUT "/nginx/proxy-hosts/$host" "$body" | head -c 400
         ;;
+    ssl-force)
+        host=${2:?need host id}; flag=${3:?need 0 or 1}
+        cur=$(api GET "/nginx/proxy-hosts/$host")
+        body=$(printf '%s' "$cur" | python3 -c '
+import json,sys
+allowed=["domain_names","forward_scheme","forward_host","forward_port","certificate_id","ssl_forced","hsts_enabled","hsts_subdomains","trust_forwarded_proto","http2_support","block_exploits","caching_enabled","allow_websocket_upgrade","access_list_id","advanced_config","enabled","meta","locations"]
+d=json.load(sys.stdin)
+out={k:d[k] for k in allowed if k in d}
+out["ssl_forced"]=sys.argv[1]=="1"; out["enabled"]=True
+print(json.dumps(out))
+' "$flag")
+        api PUT "/nginx/proxy-hosts/$host" "$body" | head -c 200
+        ;;
     *)
         echo "usage: npm-api keys|token-probe|certs|issue-le <domain>|attach-cert <host> <cert>" >&2; exit 2 ;;
 esac
