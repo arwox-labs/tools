@@ -1,0 +1,1 @@
+Правка не выполнена: Beads не найден (`bd where`: `Error: No active beads workspace found.`), а LFG ссылается на отсутствующий `skills/lfg/references/input-triage.md`. Правила требуют Beads-план и эту инструкцию до изменений. Файлы не менял.
