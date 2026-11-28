@@ -97,7 +97,7 @@ if [[ ${CODEX_ROLE_SNAPSHOT:-} != "$runner_sha" ]]; then
     exit $?
 fi
 snapshot=$0
-before=$(git -C "$project" status --porcelain --untracked-files=no 2>/dev/null | sha256sum | awk '{print $1}')
+before=$( { git -C "$project" status --porcelain -uall 2>/dev/null; git -C "$project" diff 2>/dev/null; } | sha256sum | awk '{print $1}')
 setsid timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" \
     -c 'sandbox_workspace_write.network_access=true' \
     -c "sandbox_workspace_write.writable_roots=[\"$project\",\"$project/.agent-work\",\"/root/workspaces/projects/.beads\",\"/root/workspaces/tools/.beads\",\"/root/workspaces/tools/docs\",\"/root/workspaces/tools/state\",\"/root/.local/share/opencode/log\"]" \
@@ -105,7 +105,7 @@ setsid timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$e
     </dev/null >"$artifact" 2>"$artifact.err" &
 pgid=$!
 wait $pgid; rc=$?
-after=$(git -C "$project" status --porcelain --untracked-files=no 2>/dev/null | sha256sum | awk '{print $1}')
+after=$( { git -C "$project" status --porcelain -uall 2>/dev/null; git -C "$project" diff 2>/dev/null; } | sha256sum | awk '{print $1}')
 if [[ $rc -eq 124 ]]; then
     kill -TERM -$pgid 2>/dev/null || true
     sleep 5
