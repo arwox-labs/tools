@@ -79,32 +79,62 @@ mkdir -p "$out" || exit 2
 
 artifact=$out/$(printf '%02d' "$order")-$role-$(basename "${atom%.md}").md
 atom_sha=$(sha256sum "$atom" | awk '{print $1}')
-timeout_s=$([[ "$sandbox" == "read-only" ]] && echo 300 || echo 900)
+runner_sha=$(sha256sum "$0" | awk '{print $1}')
+timeout_s=$([[ "$sandbox" == "read-only" ]] && echo 300 || echo 1800)
 
 prompt=$(cat "$atom")
+prompt+=$'\n\nКниговодство ведёт лид: не вызывай bd, не создавай Goal, не запускай git-команды. Атом уже создан и закреплён за тобой, он указан в тексте задания. Пиши только перечисленные в задании файлы. Текстовый отказ без правок считается провалом атома.'
 # В read-only контуре внутренний инструмент чтения Codex может быть недоступен —
 # тогда роль обязана читать файлы через shell, иначе артефакт будет пустым отказом.
 if [[ "$sandbox" == "read-only" ]]; then
     prompt+=$'\n\nФайлы читай через shell: sed -n "1,200p" <path> или cat <path>. Если инструмент чтения файлов отказывает, это не повод отказываться: читай shell-командой.'
 fi
-timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" -c 'sandbox_workspace_write.network_access=true' -s "$sandbox" \
-    --skip-git-repo-check -C "$project" "$prompt" >"$artifact" 2>"$artifact.err"
-rc=$?
+if [[ ${CODEX_ROLE_SNAPSHOT:-} != "$runner_sha" ]]; then
+    snapshot=$(mktemp "$out/.runner-$runner_sha.XXXXXX.sh") || exit 2
+    cp -f "$0" "$snapshot" && chmod +x "$snapshot" || { rm -f "$snapshot"; exit 2; }
+    CODEX_ROLE_SNAPSHOT=$runner_sha bash "$snapshot" "$role" "$atom" --project "$project" --out "$out"
+    exit $?
+fi
+snapshot=$0
+setsid timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" \
+    -c 'sandbox_workspace_write.network_access=true' \
+    -c "sandbox_workspace_write.writable_roots=[\"$project\",\"$project/.agent-work\",\"/root/workspaces/projects/.beads\",\"/root/workspaces/tools/.beads\",\"/root/workspaces/tools/docs\",\"/root/workspaces/tools/state\",\"/root/.local/share/opencode/log\"]" \
+    -s "$sandbox" --skip-git-repo-check -C "$project" "$prompt" \
+    </dev/null >"$artifact" 2>"$artifact.err" &
+pgid=$!
+wait $pgid; rc=$?
+if [[ $rc -eq 124 ]]; then
+    kill -TERM -$pgid 2>/dev/null || true
+    sleep 5
+    kill -KILL -$pgid 2>/dev/null || true
+fi
+rm -f "$snapshot"
 # 28.11 ba-sanatory: `-o/--output-last-message` убран — он падает с
 # `Error: Failed to write last message file ... output path was replaced` и теряет готовый ответ.
 # Guard пустого ответа — проверка непустого "$artifact" ниже.
 
 bytes=$(wc -c <"$artifact" 2>/dev/null || echo 0)
+if [[ $rc -eq 124 ]]; then
+    printf 'RUNNER role=%s model=%s sandbox=%s rc=124 partial=%s atom_sha=%s runner_sha=%s out=%s\n' \
+        "$role" "$model" "$sandbox" "$bytes" "$atom_sha" "$runner_sha" "$artifact"
+    head -3 "$artifact.err" >&2
+    exit 124
+fi
 if [[ $rc -ne 0 ]]; then
-    printf 'RUNNER role=%s model=%s sandbox=%s rc=%s bytes=%s atom_sha=%s out=%s err=%s\n' \
-        "$role" "$model" "$sandbox" "$rc" "$bytes" "$atom_sha" "$artifact" "$artifact.err"
+    printf 'RUNNER role=%s model=%s sandbox=%s rc=%s bytes=%s atom_sha=%s runner_sha=%s out=%s err=%s\n' \
+        "$role" "$model" "$sandbox" "$rc" "$bytes" "$atom_sha" "$runner_sha" "$artifact" "$artifact.err"
     head -3 "$artifact.err" >&2
     exit "$rc"
 fi
 if [[ ! -s "$artifact" ]]; then
-    printf 'RUNNER role=%s model=%s sandbox=%s rc=%s bytes=0 atom_sha=%s out=%s empty=1\n' \
-        "$role" "$model" "$sandbox" 1 "$atom_sha" "$artifact"
+    printf 'RUNNER role=%s model=%s sandbox=%s rc=%s bytes=0 atom_sha=%s runner_sha=%s out=%s empty=1\n' \
+        "$role" "$model" "$sandbox" 1 "$atom_sha" "$runner_sha" "$artifact"
     exit 1
 fi
-printf 'RUNNER role=%s model=%s sandbox=%s rc=0 bytes=%s atom_sha=%s out=%s\n' \
-    "$role" "$model" "$sandbox" "$bytes" "$atom_sha" "$artifact"
+if grep -qiE 'Не могу|Остановился|не могу менять|read-only file system|Отказ' "$artifact"; then
+    printf 'RUNNER role=%s model=%s sandbox=%s rc=1 bytes=%s atom_sha=%s runner_sha=%s out=%s refusal=1\n' \
+        "$role" "$model" "$sandbox" "$bytes" "$atom_sha" "$runner_sha" "$artifact"
+    exit 1
+fi
+printf 'RUNNER role=%s model=%s sandbox=%s rc=0 bytes=%s atom_sha=%s runner_sha=%s out=%s\n' \
+    "$role" "$model" "$sandbox" "$bytes" "$atom_sha" "$runner_sha" "$artifact"
