@@ -101,7 +101,7 @@ before=$(git -C "$project" status --porcelain --untracked-files=no 2>/dev/null |
 setsid timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" \
     -c 'sandbox_workspace_write.network_access=true' \
     -c "sandbox_workspace_write.writable_roots=[\"$project\",\"$project/.agent-work\",\"/root/workspaces/projects/.beads\",\"/root/workspaces/tools/.beads\",\"/root/workspaces/tools/docs\",\"/root/workspaces/tools/state\",\"/root/.local/share/opencode/log\"]" \
-    -s "$sandbox" --skip-git-repo-check -C "$project" "$prompt" \
+    -s "$sandbox" --ignore-user-config --skip-git-repo-check -C "$project" "$prompt" \
     </dev/null >"$artifact" 2>"$artifact.err" &
 pgid=$!
 wait $pgid; rc=$?
@@ -139,7 +139,7 @@ if [[ ! -s "$artifact" ]]; then
         "$role" "$model" "$sandbox" 1 "$atom_sha" "$runner_sha" "$artifact"
     exit 1
 fi
-if [[ $sandbox == read-only ]] && grep -qiE 'Не могу|^[[:space:]]*Остановился|не могу менять|read-only file system|^[[:space:]]*Отказ' "$artifact"; then
+if [[ $sandbox == read-only ]] && grep -qiE '^[[:space:]]*(Не могу|Не выполнено|Остановился|Отказ)|доступ к файловой системе только для чтения|read-only file system' "$artifact"; then
     printf 'RUNNER role=%s model=%s sandbox=%s rc=1 bytes=%s atom_sha=%s runner_sha=%s out=%s refusal=1\n' \
         "$role" "$model" "$sandbox" "$bytes" "$atom_sha" "$runner_sha" "$artifact"
     exit 1
