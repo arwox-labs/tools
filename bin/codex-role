@@ -97,6 +97,30 @@ if [[ ${CODEX_ROLE_SNAPSHOT:-} != "$runner_sha" ]]; then
     exit $?
 fi
 snapshot=$0
+if [[ "$sandbox" == "workspace-write" ]]; then
+    mkdir -p "$project/.agent-work" || exit 2
+    lock_file=$project/.agent-work/codex-role.lock
+    while :; do
+        if [[ -e "$lock_file" ]]; then
+            lock_pid=$(cat "$lock_file" 2>/dev/null || true)
+            if [[ "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+                printf 'lock busy (pid %s)\n' "$lock_pid" >&2
+                exit 3
+            fi
+            rm -f "$lock_file" || exit 2
+            continue
+        fi
+        if ( set -o noclobber; printf '%s\n' "$$" >"$lock_file" ) 2>/dev/null; then
+            break
+        fi
+    done
+    release_codex_role_lock() {
+        if [[ "$(cat "$lock_file" 2>/dev/null || true)" == "$$" ]]; then
+            rm -f "$lock_file"
+        fi
+    }
+    trap release_codex_role_lock EXIT
+fi
 before=$( { git -C "$project" status --porcelain -uall 2>/dev/null; git -C "$project" diff 2>/dev/null; } | sha256sum | awk '{print $1}')
 setsid timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" \
     -c 'sandbox_workspace_write.network_access=true' \
