@@ -1,0 +1,2 @@
+RESULT d-degradation.md 0
+RESULT a-db-full.md 0
