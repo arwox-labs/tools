@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf 'usage: codex-opencode <atom-file> --project <dir> [--readonly]\n' >&2
+}
+
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+    usage
+    exit 2
+fi
+
+atom=$1
+shift
+if [[ ${1:-} != --project || -z ${2:-} ]]; then
+    usage
+    exit 2
+fi
+project=$2
+shift 2
+readonly_mode=false
+if [[ ${1:-} == --readonly && $# -eq 1 ]]; then
+    readonly_mode=true
+elif [[ $# -ne 0 ]]; then
+    usage
+    exit 2
+fi
+
+if [[ ! -r $atom || ! -f $atom ]]; then
+    printf 'codex-opencode: atom file is not readable: %s\n' "$atom" >&2
+    exit 2
+fi
+if [[ ! -d $project ]]; then
+    printf 'codex-opencode: project directory does not exist: %s\n' "$project" >&2
+    exit 2
+fi
+prompt=$(<"$atom")
+
+mode=workspace-write
+args=(timeout 900 codex exec --ignore-user-config --skip-git-repo-check
+    -C "$project" --add-dir "$project"
+    -m gpt-6-luna
+    -c model_reasoning_effort="medium"
+    -c approval_policy="never"
+    -c sandbox_workspace_write.network_access=true)
+if [[ $readonly_mode == true ]]; then
+    mode=read-only
+else
+    roots="[\"$project\",\"$project/.agent-work\",\"/root/workspaces/projects/.beads\",\"/root/workspaces/tools/.beads\",\"/root/workspaces/tools/docs\",\"/root/workspaces/tools/state\",\"/root/.local/share/opencode/log\"]"
+    args+=(-c "sandbox_workspace_write.writable_roots=$roots")
+fi
+args+=(-s "$mode" "$prompt")
+
+rc=0
+"${args[@]}" || rc=$?
+printf 'RUNNER profile=opencode model=gpt-6-luna sandbox=%s rc=%s atom=%s\n' "$mode" "$rc" "$atom"
+exit "$rc"

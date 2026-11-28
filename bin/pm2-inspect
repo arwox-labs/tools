@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: pm2-inspect ls|json|describe <name>\n' >&2
+}
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'pm2-inspect: jq is required\n' >&2
+  exit 2
+fi
+
+mode=${1:-}
+case "$mode" in
+  ls|json) [[ $# -eq 1 ]] || { usage; exit 2; } ;;
+  describe) [[ $# -eq 2 ]] || { usage; exit 2; } ;;
+  *) usage; exit 2 ;;
+esac
+
+pm2_bin=${PM2_BIN:-pm2}
+processes=$(
+  "$pm2_bin" jlist | jq -c '
+    def safe_process:
+      {
+        id: .pm_id,
+        name: .name,
+        status: .pm2_env.status,
+        uptime: (if ((.pm2_env.pm_uptime // 0) | tonumber) > 0
+                 then ((now * 1000 - (.pm2_env.pm_uptime | tonumber)) / 1000 | floor)
+                 else 0 end),
+        restarts: (.pm2_env.restart_time // 0)
+      };
+    map(safe_process)
+  '
+)
+
+case "$mode" in
+  json)
+    printf '%s\n' "$processes"
+    ;;
+  ls)
+    jq -r '(["id", "name", "status", "uptime", "restarts"] | join("|")),
+      (.[] | [.id, .name, .status, .uptime, .restarts] | map(tostring) | join("|"))' <<<"$processes"
+    ;;
+  describe)
+    result=$(jq -c --arg name "$2" '[.[] | select(.name == $name)]' <<<"$processes")
+    count=$(jq 'length' <<<"$result")
+    if [[ $count -eq 0 ]]; then
+      printf 'pm2-inspect: process not found: %s\n' "$2" >&2
+      exit 1
+    fi
+    jq -c '.[0]' <<<"$result"
+    ;;
+esac
