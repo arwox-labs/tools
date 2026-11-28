@@ -61,7 +61,7 @@ sandbox=workspace-write
 
 # F2: always run Codex with cwd = workspace so `bd`/Beads resolve the workspace tracker.
 # The target repo is granted separately via --add-dir (read) and writable_roots (write).
-cmd=(timeout 900 codex exec -m "$model" -o /tmp/opencode/codex-last-message.txt -c 'model_reasoning_effort="medium"' -s "$sandbox" --skip-git-repo-check --trust -C "$WS" -c 'sandbox_workspace_write.network_access=true')
+cmd=(timeout 900 codex exec -m "$model" -c 'model_reasoning_effort="medium"' -s "$sandbox" --skip-git-repo-check --trust -C "$WS" -c 'sandbox_workspace_write.network_access=true')
 if [[ $project != "$WS" ]]; then
     cmd+=(--add-dir "$project")
 fi
@@ -103,8 +103,8 @@ printf 'LOG: %s\n' "$log" >&2
 "${cmd[@]}" <"$atom" 2>&1 | tee "$log"
 pipe_status=("${PIPESTATUS[@]}")
 rc=${pipe_status[0]}
-# 28.11 ba-sanatory: пустой последний ответ = отказ (штатный -o)
-if ((rc == 0)) && [[ ! -s /tmp/opencode/codex-last-message.txt ]]; then rc=1; fi
+# 28.11 ba-sanatory: `-o` убран (падал с `output path was replaced`); пустой вывод ловит
+# проверка непустого файла вывода ниже.
 tee_rc=${pipe_status[1]}
 
 # F3: FALLBACK only on a real failure. rc!=0 is the primary signal; a few explicit

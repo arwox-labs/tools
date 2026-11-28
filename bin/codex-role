@@ -87,11 +87,12 @@ prompt=$(cat "$atom")
 if [[ "$sandbox" == "read-only" ]]; then
     prompt+=$'\n\nФайлы читай через shell: sed -n "1,200p" <path> или cat <path>. Если инструмент чтения файлов отказывает, это не повод отказываться: читай shell-командой.'
 fi
-timeout "$timeout_s" codex exec -m "$model" -o "$artifact.last" -c model_reasoning_effort="$effort" -c 'sandbox_workspace_write.network_access=true' -s "$sandbox" \
+timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" -c 'sandbox_workspace_write.network_access=true' -s "$sandbox" \
     --skip-git-repo-check -C "$project" "$prompt" >"$artifact" 2>"$artifact.err"
 rc=$?
-# 28.11 ba-sanatory: штатная проверка пустого ответа (codex -o/--output-last-message)
-if [[ $rc -eq 0 && ( ! -s "$artifact.last" ) ]]; then rc=1; fi
+# 28.11 ba-sanatory: `-o/--output-last-message` убран — он падает с
+# `Error: Failed to write last message file ... output path was replaced` и теряет готовый ответ.
+# Guard пустого ответа — проверка непустого "$artifact" ниже.
 
 bytes=$(wc -c <"$artifact" 2>/dev/null || echo 0)
 if [[ $rc -ne 0 ]]; then
