@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# kint-cert-retry — штатный выпуск сертификата для kint.b244.ru через API NPM.
+# Запускается по расписанию: пробует выпуск, при успехе привязывает сертификат к хосту 41
+# и перезагружает nginx. Значения секретов не печатаются.
+set -uo pipefail
+
+API=/root/workspaces/tools/bin/npm-api
+HOST_ID=41
+DOMAIN=kint.b244.ru
+LOG=/var/log/kint-cert-retry.log
+
+log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG"; }
+
+out=$("$API" issue-le "$DOMAIN" 2>&1)
+if printf '%s' "$out" | grep -q '"id":[0-9]'; then
+    cid=$(printf '%s' "$out" | sed -n 's/.*"id":\([0-9]\+\).*/\1/p' | head -1)
+    log "ISSUED cert_id=$cid"
+    attach=$("$API" attach-cert "$HOST_ID" "$cid" 2>&1)
+    printf '%s' "$attach" | grep -q '"id"' && log "ATTACHED host=$HOST_ID cert=$cid" || log "ATTACH_FAILED: $(printf '%s' "$attach" | head -c 200)"
+    docker exec proxy-manager-app-1 nginx -t >>"$LOG" 2>&1 && docker exec proxy-manager-app-1 nginx -s reload >>"$LOG" 2>&1
+    issuer=$(echo | timeout 8 openssl s_client -connect 127.0.0.1:443 -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+    log "ISSUER: ${issuer:-unknown}"
+    exit 0
+fi
+
+log "RETRY_FAILED: $(printf '%s' "$out" | head -c 200)"
+exit 1

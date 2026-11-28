@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# npm-api — thin wrapper over the Nginx Proxy Manager API (owner's штатный path).
+# Credentials are read from the secrets file at runtime; values are NEVER printed.
+# Usage: npm-api keys | token-probe | certs | issue-le <domain> | attach-cert <host_id> <cert_id>
+set -uo pipefail
+
+ENV_FILE=${NPM_ENV_FILE:-/root/workspaces/secrets/system/services/npm.env}
+BASE=${NPM_BASE:-http://172.17.0.1:81}
+
+load_env() {
+    [[ -r "$ENV_FILE" ]] || { echo "npm-api: нет файла окружения" >&2; exit 2; }
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+}
+
+token() {
+    load_env
+    local id=${NPM_EMAIL:?} sec=${NPM_PASS:?} out
+    out=$(curl -s -m 15 -X POST "$BASE/api/tokens" -H 'Content-Type: application/json' \
+        --data "$(printf '{"identity":"%s","secret":"%s"}' "$id" "$sec")")
+    printf '%s' "$out" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
+}
+
+api() { # api METHOD PATH [BODY]
+    local m=$1 p=$2 body=${3:-} t
+    t=$(token)
+    [[ -n "$t" ]] || { echo "npm-api: нет токена" >&2; exit 4; }
+    if [[ -n "$body" ]]; then
+        curl -s -m 90 -X "$m" "$BASE/api$p" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' --data "$body"
+    else
+        curl -s -m 30 -X "$m" "$BASE/api$p" -H "Authorization: Bearer $t"
+    fi
+}
+
+cmd=${1:-}
+case "$cmd" in
+    keys)
+        load_env; grep -o '^[A-Za-z0-9_]*=' "$ENV_FILE" | tr -d '=' | sed 's/^/key: /'
+        ;;
+    token-probe)
+        t=$(token); [[ -n "$t" ]] && echo AUTH_OK || { echo AUTH_FAIL; exit 4; }
+        ;;
+    certs)
+        api GET /nginx/certificates | sed 's/},{/}\n{/g' | grep -o '"id":[0-9]*,"created_on":"[^"]*","modified_on":"[^"]*","provider":"[^"]*","nice_name":"[^"]*"' | head -40
+        ;;
+    issue-le)
+        dom=${2:?need domain}
+        body=$(printf '{"provider":"letsencrypt","nice_name":"%s","domain_names":["%s"],"meta":{"dns_challenge":false,"key_type":"rsa"}}' "$dom" "$dom")
+        out=$(api POST /nginx/certificates "$body")
+        echo "$out" | head -c 600
+        ;;
+    attach-cert)
+        host=${2:?need host id}; cert=${3:?need cert id}
+        cur=$(api GET "/nginx/proxy-hosts/$host")
+        body=$(printf '%s' "$cur" | sed "s/\"certificate_id\":[^,]*/\"certificate_id\":$cert/; s/\"ssl_forced\":[^,]*/\"ssl_forced\":true/; s/\"http2_support\":[^,]*/\"http2_support\":true/")
+        api PUT "/nginx/proxy-hosts/$host" "$body" | head -c 400
+        ;;
+    *)
+        echo "usage: npm-api keys|token-probe|certs|issue-le <domain>|attach-cert <host> <cert>" >&2; exit 2 ;;
+esac
