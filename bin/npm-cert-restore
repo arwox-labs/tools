@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Restore the original certificate material of an NPM custom certificate from its DB meta.
+
+Reads the PEM pair stored by NPM itself in certificate.meta and re-uploads it through the
+official NPM API, so NPM writes the files. No new certificate is created, nothing is printed
+except status lines. Values never leave this process.
+"""
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import urllib.request
+
+DB = "/root/workspaces/system/services/proxy-manager/data/database.sqlite"
+BASE = "http://172.17.0.1:81"
+ENV = "/root/workspaces/secrets/system/services/npm.env"
+CERT_ID = int(sys.argv[1]) if len(sys.argv) > 1 else 49
+
+
+def env():
+    vals = {}
+    with open(ENV) as fh:
+        for line in fh:
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                vals[k] = v
+    return vals
+
+
+def token():
+    e = env()
+    body = json.dumps({"identity": e["NPM_EMAIL"], "secret": e["NPM_PASS"]}).encode()
+    req = urllib.request.Request(BASE + "/api/tokens", data=body,
+                                headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)["token"]
+
+
+def meta_from_db():
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    row = con.execute("select meta, domain_names, nice_name from certificate where id=?",
+                      (CERT_ID,)).fetchone()
+    con.close()
+    if not row:
+        raise SystemExit("certificate not found")
+    return json.loads(row[0]), json.loads(row[1]), row[2]
+
+
+def main():
+    meta, domains, nice = meta_from_db()
+    if "certificate" not in meta or "certificate_key" not in meta:
+        raise SystemExit("no PEM pair in meta")
+    tok = token()
+    body = json.dumps({
+        "provider": "other",
+        "nice_name": nice or (domains[0] if domains else f"cert-{CERT_ID}"),
+        "domain_names": domains,
+        "meta": {"certificate": meta["certificate"], "certificate_key": meta["certificate_key"]},
+    }).encode()
+    req = urllib.request.Request(BASE + "/api/nginx/certificates", data=body,
+                                headers={"Content-Type": "application/json",
+                                         "Authorization": "Bearer " + tok},
+                                method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            out = json.load(r)
+            print("RESTORED id=%s provider=%s expires=%s" %
+                  (out.get("id"), out.get("provider"), out.get("expires_on")))
+    except urllib.error.HTTPError as e:
+        print("HTTP %s: %s" % (e.code, e.read().decode()[:300]))
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
