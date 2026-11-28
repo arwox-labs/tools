@@ -53,3 +53,42 @@ sqlite3 "file:/root/.local/share/opencode/opencode.db?mode=ro" \
 - Атом B (роллауты Codex): Codex отказался читать роллауты — его собственный Gitleaks-предскан дал 37 совпадений; значения не выводились, файлы не изменялись. Данные по роллаутам получены механикой (см. §4).
 - Атом C (избыточность конфигов): первый прогон не дал артефакта (0 байт) — перезапущен сжатым атомом.
 - Ревьюер (gpt-6.2-astra): первый прогон убит по таймауту обёртки без артефакта — перезапущен сжатым атомом.
+## 7. Два дефекта, найденных и закрытых 28.11 (после первого прогона аудита)
+
+### 7.1 Рантайм принимает только `session.idle`
+
+Лог `opencode.log:156036-156038` (после первого «исправления»):
+
+```
+WARN ignoring unknown event types pluginID=no-tails types="[\"message.updated\",\"message.part.updated\"]"
+```
+
+Рантайм OpenCode v2 отбрасывает `message.updated` и `message.part.updated`; подписка на `session.idle` принимается. Следствие: коррекция `no-tails` не срабатывала ни разу —
+`select count(*) from part where data like '%Не заканчивай ответ%'` → `0`.
+
+Исправлено: все три плагина подписаны только на `session.idle`, счётчики коррекций сбрасываются на чистом ходе / при отсутствии открытых todo. Коммит contour-config `b93a409`.
+Проверка после `opencode reload` (14:20:04): счётчик `grep -c 'ignoring unknown event types'` не вырос — `before=263 after=263`.
+
+### 7.2 `codex exec -o` теряет ответ
+
+`docs/codex-audit/20261128/ba4/07-builder-atom-c-tight.md.err`:
+
+```
+Error: Failed to write last message file ".../07-builder-atom-c-tight.md.last"
+Caused by:
+    output path was replaced
+```
+
+При этом модель отработала (в том же `.err`: `ИТОГО: 13 находок`, `tokens used 85,510`). Из-за ошибки записи `rc != 0`, артефакт остаётся 0 байт.
+Проверено вручную: `codex exec` без `-o` отдаёт финальное сообщение в stdout — `rc=0`, `SMOKE-OK` (9 байт).
+
+### 7.3 Итог исправлений
+
+- Плагины: `subscribe({ types: ["session.idle"] })` во всех трёх; коммит contour-config `b93a409`; после `opencode reload` новых WARN нет (`before=263 after=263`).
+- Обёртки: `-o` удалён из `codex-role` и `codex-atom`; коммит tools `b40c127`, PR **#579** (squash merged). Проверка живого прогона: `RUNNER role=explorer model=gpt-6-luna sandbox=read-only rc=0 bytes=9 … out=…/05-explorer-smoke.md`.
+- Синтаксис: `bash -n` обоих скриптов → `SYNTAX_OK`; `node --input-type=module --check` трёх плагинов → `no-tails OK`, `todo-gate OK`, `codex-first OK`.
+
+### 7.4 Что осталось непроверенным
+
+- Функциональное срабатывание `no-tails`/`todo-gate` на реальном ходе с хвостом (подписка валидна, доставка события в плагин подтверждена отсутствием WARN, но коррекция в живой сессии не наблюдалась) — UNVERIFIED.
+- Нативная компакция провайдера `alibaba-token-plan`: поддержка в документации не подтверждена, не включена.
