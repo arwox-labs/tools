@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""codex-compliance — внешняя проверка гейта Codex без перезапуска сессий.
+
+Читает БД OpenCode только на чтение и отвечает на один вопрос: были ли в сессии
+правки файлов (инструменты edit/write/patch или shell-запись) без строки
+`RUNNER … rc=0` от codex-role. Плагин codex-first живёт в памяти сервиса и в
+работающих сессиях не обновляется, поэтому проверка идёт снаружи — по данным.
+
+usage: codex-compliance [--minutes N] [--db PATH] [--quiet]
+exit 0 — нарушений нет, 1 — есть нарушители, 2 — ошибка вызова.
+"""
+import argparse
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+
+DEFAULT_DB = "/root/.local/share/opencode/opencode.db"
+EDIT_TOOLS = {"edit", "write", "patch", "apply_patch"}
+SHELL_WRITE = re.compile(
+    r"(?:^|[;&|]\s*)(?:sed\s+-i|tee\b|cp\s|mv\s|install\s+-m|truncate\s+-s|patch\b|git\s+apply\b)|>>?\s*[^\s&|]+"
+)
+RUNNER_OK = re.compile(r"RUNNER role=[a-z]+ model=\S+ sandbox=\S+ rc=0\b")
+RUNNER_QUOTA = re.compile(r"RUNNER role=[a-z]+ model=\S+ sandbox=\S+ rc=29\b")
+
+
+def tool_name(part: dict) -> str:
+    return part.get("name") or part.get("tool") or ""
+
+
+def shell_command(part: dict) -> str:
+    state = part.get("state") or {}
+    value = state.get("input", part.get("input", part.get("args")))
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("command", "") or ""
+    return ""
+
+
+def flatten(part: dict) -> str:
+    try:
+        return json.dumps(part)
+    except (TypeError, ValueError):
+        return ""
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--minutes", type=int, default=120)
+    ap.add_argument("--db", default=DEFAULT_DB)
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
+
+    if not os.path.exists(args.db):
+        print(f"codex-compliance: нет базы {args.db}", file=sys.stderr)
+        return 2
+    since_ms = int((time.time() - args.minutes * 60) * 1000)
+
+    uri = f"file:{args.db}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=10)
+    except sqlite3.Error as err:
+        print(f"codex-compliance: {err}", file=sys.stderr)
+        return 2
+
+    rows = conn.execute(
+        "SELECT s.id, s.title, p.data FROM session_v2 s "
+        "JOIN session_part p ON p.session_id = s.id "
+        "WHERE s.time_updated > ? AND p.type = 'tool'",
+        (since_ms,),
+    ).fetchall()
+
+    per_session: dict[str, dict] = {}
+    for sid, title, data in rows:
+        try:
+            part = json.loads(data)
+        except (TypeError, ValueError):
+            continue
+        entry = per_session.setdefault(sid, {"title": title, "edits": 0, "runner_ok": 0, "quota": 0})
+        name = tool_name(part)
+        text = flatten(part)
+        if RUNNER_OK.search(text):
+            entry["runner_ok"] += 1
+        elif RUNNER_QUOTA.search(text):
+            entry["quota"] += 1
+        if name in EDIT_TOOLS:
+            entry["edits"] += 1
+        elif name in ("shell", "bash") and SHELL_WRITE.search(shell_command(part)):
+            entry["edits"] += 1
+
+    bad = {sid: e for sid, e in per_session.items() if e["edits"] > 0 and e["runner_ok"] == 0 and e["quota"] == 0}
+    if not args.quiet:
+        for sid, e in sorted(bad.items(), key=lambda kv: -kv[1]["edits"]):
+            title = (e["title"] or "")[:40]
+            print(f"VIOLATION session={sid} edits={e['edits']} runner=0 title={title!r}")
+        print(f"COMPLIANCE sessions={len(per_session)} violations={len(bad)} window={args.minutes}min")
+    conn.close()
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
