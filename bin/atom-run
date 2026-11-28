@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+todo='?'
+file_count=0
+
+fail() {
+  printf 'ATOMRUN verdict=FAILED:%s todo=%s files=%s detail=%s\n' "$1" "$todo" "$file_count" "$2"
+  exit "${3:-1}"
+}
+
+if (( $# != 3 )) || [[ $2 != --project ]] || [[ -z $1 || -z $3 ]]; then
+  fail arguments usage 2
+fi
+
+atom_file=$1
+project=$3
+files_value=''
+expect=''
+command=''
+gate=''
+
+while IFS= read -r line || [[ -n $line ]]; do
+  case $line in
+    todo:*) todo=${line#todo:}; todo=${todo#"${todo%%[![:space:]]*}"} ;;
+    files:*) files_value=${line#files:}; files_value=${files_value#"${files_value%%[![:space:]]*}"} ;;
+    expect:*) expect=${line#expect:}; expect=${expect#"${expect%%[![:space:]]*}"} ;;
+    cmd:*) command=${line#cmd:}; command=${command#"${command%%[![:space:]]*}"} ;;
+    gate:*) gate=${line#gate:}; gate=${gate#"${gate%%[![:space:]]*}"} ;;
+    '') continue ;;
+    *) break ;;
+  esac
+done < "$atom_file" 2>/dev/null || fail atom-read read-error
+
+[[ $todo != '?' && -n $todo ]] || fail no-todo missing
+[[ $todo =~ ^[[:alnum:]_.-]+$ ]] || fail bad-todo invalid
+[[ -n $files_value ]] || fail no-files missing
+[[ -n $expect ]] || fail no-expect missing
+[[ -n $command ]] || fail no-cmd missing
+
+read -r -a files <<< "$files_value"
+file_count=${#files[@]}
+(( file_count > 0 )) || fail no-files missing
+
+if ! status=$(git -C "$project" status --porcelain -- "${files[@]}" 2>/dev/null); then
+  fail git-status error
+fi
+[[ -z $status ]] || fail dirty-file changed
+
+timeout 900 bash -c "$command" >/dev/null 2>&1
+rc=$?
+if (( rc != 0 )); then
+  fail cmd "rc=$rc"
+fi
+
+if ! diff=$(git -C "$project" diff -- "${files[@]}" 2>/dev/null); then
+  fail git-diff error
+fi
+[[ -n $diff ]] || fail no-diff empty
+grep -Eq -- "$expect" <<< "$diff" 2>/dev/null || fail no-marker absent
+
+if [[ -n $gate ]]; then
+  bash -c "$gate" >/dev/null 2>&1
+  rc=$?
+  if (( rc != 0 )); then
+    fail gate "rc=$rc"
+  fi
+  gate_result=ok
+else
+  gate_result=none
+fi
+
+printf 'ATOMRUN verdict=PASS todo=%s files=%s marker=ok gate=%s\n' "$todo" "$file_count" "$gate_result"
