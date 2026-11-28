@@ -61,7 +61,7 @@ sandbox=workspace-write
 
 # F2: always run Codex with cwd = workspace so `bd`/Beads resolve the workspace tracker.
 # The target repo is granted separately via --add-dir (read) and writable_roots (write).
-cmd=(timeout 900 codex exec -m "$model" -c 'model_reasoning_effort="medium"' -s "$sandbox" --skip-git-repo-check --trust -C "$WS" -c 'sandbox_workspace_write.network_access=true' -c 'approval_policy="never"')
+cmd=(timeout 900 codex exec -m "$model" -c 'model_reasoning_effort="medium"' -s "$sandbox" --skip-git-repo-check --trust -C "$WS" -c 'sandbox_workspace_write.network_access=true')
 if [[ $project != "$WS" ]]; then
     cmd+=(--add-dir "$project")
 fi

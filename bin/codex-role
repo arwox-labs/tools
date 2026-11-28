@@ -87,7 +87,7 @@ prompt=$(cat "$atom")
 if [[ "$sandbox" == "read-only" ]]; then
     prompt+=$'\n\nФайлы читай через shell: sed -n "1,200p" <path> или cat <path>. Если инструмент чтения файлов отказывает, это не повод отказываться: читай shell-командой.'
 fi
-timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" -c approval_policy="never" -c 'sandbox_workspace_write.network_access=true' -s "$sandbox" \
+timeout "$timeout_s" codex exec -m "$model" -c model_reasoning_effort="$effort" -c 'sandbox_workspace_write.network_access=true' -s "$sandbox" \
     --skip-git-repo-check -C "$project" "$prompt" >"$artifact" 2>"$artifact.err"
 rc=$?
 
